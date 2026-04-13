@@ -1,0 +1,6 @@
+python-can[pcan]>=4.4.0
+uptime>=3.0.1
+rich>=13.0.0
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0

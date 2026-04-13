@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CAN Logger</title>
+<style>
+  :root {
+    --bg:        #0d1117;
+    --surface:   #161b22;
+    --surface2:  #1c2330;
+    --border:    #30363d;
+    --cyan:      #39d0c8;
+    --cyan-dim:  #1a6b68;
+    --green:     #3fb950;
+    --red:       #f85149;
+    --yellow:    #e3b341;
+    --blue:      #58a6ff;
+    --purple:    #bc8cff;
+    --text:      #e6edf3;
+    --text-dim:  #8b949e;
+    --text-mute: #484f58;
+    --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --font-ui:   -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── TOP BAR ─────────────────────────────────────────────── */
+  #topbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #topbar h1 {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--cyan);
+    text-transform: uppercase;
+    margin-right: 8px;
+  }
+  .badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+  .badge.green  { border-color: var(--green);  color: var(--green); }
+  .badge.red    { border-color: var(--red);    color: var(--red); }
+  .badge.yellow { border-color: var(--yellow); color: var(--yellow); }
+  .badge.cyan   { border-color: var(--cyan);   color: var(--cyan); }
+
+  #status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-mute);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  #status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  #status-dot.error  { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+
+  #topbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* ── STATS BAR ───────────────────────────────────────────── */
+  #statsbar {
+    display: flex;
+    gap: 0;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 20px;
+    border-right: 1px solid var(--border);
+  }
+  .stat:last-child { border-right: none; }
+  .stat-value {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+  }
+  .stat-label {
+    font-size: 10px;
+    color: var(--text-mute);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-top: 2px;
+  }
+  #log-name-bar {
+    margin-left: auto;
+    padding: 6px 16px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-mute);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  #log-name-bar span { color: var(--cyan); }
+
+  /* ── MAIN LAYOUT ─────────────────────────────────────────── */
+  #main {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── SIDEBAR ─────────────────────────────────────────────── */
+  #sidebar {
+    width: 230px;
+    min-width: 230px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 14px;
+    gap: 14px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .section-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+    margin-bottom: 7px;
+  }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--text-dim); }
+
+  select, input[type="text"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    outline: none;
+    width: 100%;
+    transition: border-color 0.2s;
+  }
+  select:focus, input:focus { border-color: var(--cyan); }
+  select:disabled, input:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .toggle-row:last-child { border-bottom: none; }
+  .toggle-row label { font-size: 12px; color: var(--text-dim); }
+
+  .toggle { position: relative; width: 36px; height: 20px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; inset: 0;
+    background: var(--border);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .toggle-slider::before {
+    content: "";
+    position: absolute;
+    width: 14px; height: 14px;
+    left: 3px; top: 3px;
+    background: white; border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--cyan); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(16px); }
+  .toggle input:disabled + .toggle-slider { opacity: 0.4; cursor: not-allowed; }
+
+  /* ── BUTTONS ─────────────────────────────────────────────── */
+  .btn {
+    padding: 8px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    letter-spacing: 0.02em;
+  }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-start { background: var(--green); color: #000; }
+  .btn-start:hover:not(:disabled) { background: #5bdb6b; }
+  .btn-stop  { background: var(--red); color: #fff; }
+  .btn-stop:hover:not(:disabled)  { background: #ff6b63; }
+  .btn-secondary {
+    background: var(--surface2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover:not(:disabled) { border-color: var(--cyan); color: var(--cyan); }
+  #btn-scan { font-size: 11px; padding: 5px 10px; }
+
+  /* ── PANE SHARED ─────────────────────────────────────────── */
+  .pane {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+  }
+  .pane:last-child { border-right: none; }
+
+  .pane-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--surface2);
+    border-bottom: 2px solid var(--border);
+    flex-shrink: 0;
+  }
+  .pane-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+  }
+  .pane-count {
+    font-size: 10px;
+    font-family: var(--font-mono);
+    color: var(--cyan);
+    margin-left: 4px;
+  }
+
+  /* ── LOG PANE ────────────────────────────────────────────── */
+  #pane-log { flex: 3; min-width: 0; }
+
+  #filterbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #filter-input {
+    flex: 1;
+    max-width: 200px;
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+  #filterbar label { font-size: 10px; color: var(--text-mute); }
+
+  #paused-banner {
+    display: none;
+    padding: 3px 10px;
+    background: #2a1f00;
+    border-bottom: 1px solid var(--yellow);
+    font-size: 11px;
+    color: var(--yellow);
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .tbl-head {
+    display: grid;
+    padding: 5px 10px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--text-mute);
+    flex-shrink: 0;
+  }
+  #log-head  { grid-template-columns: 52px 82px 90px 32px 1fr 64px; }
+
+  #msg-table {
+    flex: 1;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+  }
+  .msg-row {
+    display: grid;
+    grid-template-columns: 52px 82px 90px 32px 1fr 64px;
+    padding: 2px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border-bottom: 1px solid var(--surface2);
+    align-items: center;
+  }
+  .msg-row:hover { background: var(--surface2); }
+  .msg-row.xtd .col-id { color: var(--cyan); }
+  .msg-row.std .col-id { color: #8ecae6; }
+  .msg-row.err { color: var(--red); }
+  .msg-row.fd  .col-flags { color: var(--blue); }
+  .msg-row.rtr { color: var(--yellow); }
+  .col-n     { color: var(--text-mute); }
+  .col-t     { color: var(--text-dim); }
+  .col-dl    { color: var(--text-dim); text-align: center; }
+  .col-data  { color: var(--text); letter-spacing: 0.04em; }
+  .col-flags { font-size: 9px; color: var(--text-mute); }
+
+  /* ── CAN ID PANE ─────────────────────────────────────────── */
+  #pane-canid { width: 310px; min-width: 260px; }
+
+  #canid-head { grid-template-columns: 72px 56px 1fr 52px; }
+  #canid-table { flex: 1; overflow-y: auto; }
+
+  .canid-row {
+    display: grid;
+    grid-template-columns: 72px 56px 1fr 52px;
+    padding: 3px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border-bottom: 1px solid var(--surface2);
+    align-items: center;
+    transition: background 0.15s;
+  }
+  .canid-row:hover { background: var(--surface2); }
+  .canid-row.flash { background: #1a2e1a; }
+  .canid-id    { color: var(--cyan); font-weight: 600; }
+  .canid-count { color: var(--text-dim); text-align: right; padding-right: 8px; }
+  .canid-data  { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .canid-ms    { color: var(--text-mute); text-align: right; font-size: 10px; }
+  .canid-ms.fast { color: var(--green); }
+  .canid-ms.slow { color: var(--yellow); }
+
+  /* ── SIGNAL PANE ─────────────────────────────────────────── */
+  #pane-signal { width: 310px; min-width: 260px; }
+
+  #sig-head { grid-template-columns: 1fr 68px 72px 60px 60px; }
+  #sig-table { flex: 1; overflow-y: auto; }
+
+  .sig-row {
+    display: grid;
+    grid-template-columns: 1fr 68px 72px 60px 60px;
+    padding: 4px 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    border-bottom: 1px solid var(--surface2);
+    align-items: center;
+    transition: background 0.15s;
+  }
+  .sig-row:hover { background: var(--surface2); }
+  .sig-row.flash { background: #15263a; }
+  .sig-name  { color: var(--text-dim); font-family: var(--font-ui); font-size: 11px; }
+  .sig-canid { color: var(--text-mute); font-size: 10px; }
+  .sig-value { color: var(--cyan); font-weight: 600; text-align: right; padding-right: 4px; }
+  .sig-value.vin { color: var(--green); font-size: 9px; letter-spacing: 0; }
+  .sig-min   { color: var(--blue);    text-align: right; padding-right: 4px; font-size: 10px; }
+  .sig-max   { color: var(--yellow);  text-align: right; font-size: 10px; }
+  .sig-row.no-data .sig-value { color: var(--text-mute); }
+
+  /* ── SEPARATOR ───────────────────────────────────────────── */
+  hr.divider { border: none; border-top: 1px solid var(--border); margin: 3px 0; }
+
+  /* ── BUTTONS ─────────────────────────────────────────────── */
+  .btn-start { background: var(--green); color: #000; }
+  .btn-start:hover:not(:disabled) { background: #5bdb6b; }
+
+  /* ── TOAST ───────────────────────────────────────────────── */
+  #toast {
+    position: fixed;
+    bottom: 20px; right: 20px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--text);
+    opacity: 0;
+    transform: translateY(8px);
+    transition: opacity 0.25s, transform 0.25s;
+    pointer-events: none;
+    max-width: 360px;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; transform: translateY(0); }
+  #toast.green { border-color: var(--green); }
+  #toast.red   { border-color: var(--red); }
+
+  /* ── SCROLLBAR ───────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-mute); }
+</style>
+</head>
+<body>
+
+<!-- ── TOP BAR ──────────────────────────────────────────────────────── -->
+<div id="topbar">
+  <div id="status-dot"></div>
+  <h1>CAN Logger</h1>
+  <span class="badge" id="badge-channel">—</span>
+  <span class="badge" id="badge-bitrate">—</span>
+  <span class="badge" id="badge-mode">—</span>
+
+  <div id="topbar-right">
+    <button class="btn btn-start" id="btn-start" style="width:auto;padding:6px 18px">
+      ▶ Start Logging
+    </button>
+    <button class="btn btn-stop" id="btn-stop" style="width:auto;padding:6px 18px" disabled>
+      ■ Stop
+    </button>
+  </div>
+</div>
+
+<!-- ── STATS BAR ─────────────────────────────────────────────────────── -->
+<div id="statsbar">
+  <div class="stat">
+    <div class="stat-value" id="stat-msgs">0</div>
+    <div class="stat-label">Messages</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="stat-rate">0.0</div>
+    <div class="stat-label">Msg / s</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="stat-elapsed">0:00:00</div>
+    <div class="stat-label">Elapsed</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="stat-ids">0</div>
+    <div class="stat-label">Unique IDs</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value" id="stat-errors">0</div>
+    <div class="stat-label">Errors</div>
+  </div>
+  <div id="log-name-bar">
+    <span style="color:var(--text-mute)">Log:</span>
+    <span id="log-filename">—</span>
+  </div>
+</div>
+
+<!-- ── MAIN ──────────────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- ── SIDEBAR ──────────────────────────────────────────── -->
+  <div id="sidebar">
+
+    <div>
+      <div class="section-label">Device</div>
+      <div class="field">
+        <label>Channel</label>
+        <select id="sel-channel"><option value="">Scanning…</option></select>
+      </div>
+      <div style="margin-top:7px; display:flex; gap:6px;">
+        <button class="btn btn-secondary" id="btn-scan" style="flex:1">⟳ Rescan</button>
+        <button class="btn btn-secondary" id="btn-kill"
+                style="flex:1; border-color:#f85149; color:#f85149;"
+                title="Force-close any stuck connection">⚡ Kill</button>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div>
+      <div class="section-label">Bus Parameters</div>
+      <div class="field">
+        <label>Bit-rate</label>
+        <select id="sel-bitrate">
+          <option value="5000">5 kbit/s</option>
+          <option value="10000">10 kbit/s</option>
+          <option value="20000">20 kbit/s</option>
+          <option value="50000">50 kbit/s</option>
+          <option value="100000">100 kbit/s</option>
+          <option value="125000">125 kbit/s</option>
+          <option value="250000">250 kbit/s</option>
+          <option value="500000" selected>500 kbit/s</option>
+          <option value="800000">800 kbit/s</option>
+          <option value="1000000">1 Mbit/s</option>
+        </select>
+      </div>
+    </div>
+
+    <div>
+      <div class="toggle-row">
+        <label>Listen-only (passive)</label>
+        <label class="toggle">
+          <input type="checkbox" id="tog-passive" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <label>CAN FD</label>
+        <label class="toggle">
+          <input type="checkbox" id="tog-fd">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div>
+      <div class="section-label">Log File</div>
+      <div class="field">
+        <label>Format</label>
+        <select id="sel-fmt">
+          <option value=".trc" selected>.trc — PEAK format</option>
+          <option value=".asc">.asc — Vector format</option>
+          <option value=".csv">.csv — Spreadsheet</option>
+          <option value=".log">.log — Plain text</option>
+          <option value=".blf">.blf — Vector binary</option>
+        </select>
+      </div>
+      <div class="field" style="margin-top:7px">
+        <label>Note (optional)</label>
+        <input type="text" id="inp-note" placeholder="e.g. highway_test"
+               spellcheck="false" maxlength="40">
+      </div>
+      <div style="margin-top:5px; font-size:10px; color:var(--text-mute); line-height:1.5">
+        Saved to: <span style="color:var(--cyan)">logs/</span> — never overwritten
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div>
+      <div class="section-label">Display</div>
+      <div class="toggle-row">
+        <label>Auto-scroll log</label>
+        <label class="toggle">
+          <input type="checkbox" id="tog-scroll" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <label>Pause log display</label>
+        <label class="toggle">
+          <input type="checkbox" id="tog-pause">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div style="margin-top:9px">
+        <button class="btn btn-secondary" id="btn-clear">✕ Clear Log</button>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+
+  <!-- ── LOG PANE ──────────────────────────────────────────── -->
+  <div class="pane" id="pane-log">
+
+    <div id="filterbar">
+      <label>Filter ID:</label>
+      <input type="text" id="filter-input" placeholder="e.g. 1F5" spellcheck="false">
+      <label style="margin-left:6px">Min DL:</label>
+      <select id="filter-dl" style="width:50px;padding:3px 5px;font-size:11px">
+        <option value="0">0</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="8">8</option>
+      </select>
+      <label class="toggle" style="margin-left:10px;width:auto;height:auto;display:flex;align-items:center;gap:5px">
+        <input type="checkbox" id="filter-err" style="width:auto;height:auto;opacity:1;position:static">
+        <span style="font-size:10px;color:var(--text-mute)">Hide errors</span>
+      </label>
+    </div>
+
+    <div id="paused-banner">⏸ Display paused — messages still being logged</div>
+
+    <div class="tbl-head" id="log-head">
+      <span>#</span>
+      <span>Time (s)</span>
+      <span>ID</span>
+      <span>DL</span>
+      <span>Data</span>
+      <span>Flags</span>
+    </div>
+
+    <div id="msg-table"></div>
+  </div>
+
+  <!-- ── CAN ID PANE ────────────────────────────────────────── -->
+  <div class="pane" id="pane-canid">
+    <div class="pane-header">
+      <span class="pane-title">CAN IDs</span>
+      <span class="pane-count" id="canid-count">0</span>
+    </div>
+
+    <div class="tbl-head" id="canid-head">
+      <span>ID</span>
+      <span style="text-align:right;padding-right:8px">Count</span>
+      <span>Latest Payload</span>
+      <span style="text-align:right">ΔmS</span>
+    </div>
+
+    <div id="canid-table"></div>
+  </div>
+
+  <!-- ── SIGNAL PANE ────────────────────────────────────────── -->
+  <div class="pane" id="pane-signal">
+    <div class="pane-header">
+      <span class="pane-title">Signals</span>
+      <span class="pane-count" id="sig-count">0</span>
+      <span id="lib-badge" style="margin-left:auto;font-size:9px;font-family:var(--font-mono);color:var(--text-mute)" title="">lib: —</span>
+    </div>
+
+    <div class="tbl-head" id="sig-head">
+      <span>Signal</span>
+      <span>CAN ID</span>
+      <span style="text-align:right;padding-right:4px">Value</span>
+      <span style="text-align:right;padding-right:4px">Min</span>
+      <span style="text-align:right">Max</span>
+    </div>
+
+    <div id="sig-table"></div>
+  </div>
+
+</div><!-- /main -->
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let ws = null;
+let running = false;
+let msgCount = 0;
+let errorCount = 0;
+let startTime = null;
+let rateWindow = [];
+let elapsedTimer = null;
+const MAX_ROWS = 600;
+let rows = [];
+let paused = false;
+
+// CAN ID tracking  { id → { el, flashTimer } }
+const canidRows = {};
+let canidSortedIds = [];  // sorted hex string list
+
+// Signal tracking  { pid → { el, flashTimer } }
+const sigRows = {};
+
+// ── Elements ────────────────────────────────────────────────────────────────
+const dot         = document.getElementById('status-dot');
+const badgeCh     = document.getElementById('badge-channel');
+const badgeBr     = document.getElementById('badge-bitrate');
+const badgeMode   = document.getElementById('badge-mode');
+const statMsgs    = document.getElementById('stat-msgs');
+const statRate    = document.getElementById('stat-rate');
+const statElapsed = document.getElementById('stat-elapsed');
+const statErrors  = document.getElementById('stat-errors');
+const statIds     = document.getElementById('stat-ids');
+const logFilename = document.getElementById('log-filename');
+const msgTable    = document.getElementById('msg-table');
+const canidTable  = document.getElementById('canid-table');
+const sigTable    = document.getElementById('sig-table');
+const btnStart    = document.getElementById('btn-start');
+const btnStop     = document.getElementById('btn-stop');
+const btnScan     = document.getElementById('btn-scan');
+const btnClear    = document.getElementById('btn-clear');
+const selChannel  = document.getElementById('sel-channel');
+const selBitrate  = document.getElementById('sel-bitrate');
+const selFmt      = document.getElementById('sel-fmt');
+const togPassive  = document.getElementById('tog-passive');
+const togFD       = document.getElementById('tog-fd');
+const togScroll   = document.getElementById('tog-scroll');
+const togPause    = document.getElementById('tog-pause');
+const filterInput = document.getElementById('filter-input');
+const filterDL    = document.getElementById('filter-dl');
+const filterErr   = document.getElementById('filter-err');
+const pausedBanner= document.getElementById('paused-banner');
+const canidCount  = document.getElementById('canid-count');
+const sigCount    = document.getElementById('sig-count');
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ''; }, 3500);
+}
+
+// ── Scan ─────────────────────────────────────────────────────────────────────
+async function scan() {
+  selChannel.innerHTML = '<option value="">Scanning…</option>';
+  selChannel.disabled = true;
+  try {
+    const r = await fetch('/scan');
+    const d = await r.json();
+    selChannel.innerHTML = '';
+
+    const active    = d.devices.filter(v => v.condition === 'active');
+    const available = d.devices.filter(v => v.condition === 'available');
+    const occupied  = d.devices.filter(v => v.condition === 'occupied');
+    const rest      = d.devices.filter(v => v.condition === 'unavailable');
+
+    const addGroup = (label, devs, suffix) => {
+      if (!devs.length) return;
+      const grp = document.createElement('optgroup');
+      grp.label = label;
+      selChannel.appendChild(grp);
+      devs.forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev.channel;
+        opt.textContent = dev.channel + (suffix ? ' ' + suffix : '');
+        grp.appendChild(opt);
+      });
+    };
+
+    addGroup('● Active (this app)', active,    '');
+    addGroup('✓ Available',          available, '');
+    addGroup('⚠ In use (other)',     occupied,  '(in use)');
+    addGroup('— Manual override',    rest,      '(not detected)');
+
+    if (active.length) selChannel.value = active[0].channel;
+
+    const detected = active.length + available.length + occupied.length;
+    if (detected > 0) toast(`Found ${detected} device(s)`, 'green');
+    else toast('No PCAN-USB devices detected', 'red');
+  } catch (e) {
+    selChannel.innerHTML = '<option value="">Server unreachable</option>';
+    toast('Could not reach server', 'red');
+  }
+  selChannel.disabled = running;
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+function connectWS() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => handleServerMsg(JSON.parse(e.data));
+  ws.onclose   = () => setTimeout(connectWS, 1000);
+}
+
+function handleServerMsg(msg) {
+  switch (msg.type) {
+    case 'frame':   addFrame(msg);   break;
+    case 'canid':   updateCanID(msg); break;
+    case 'signal':  updateSignal(msg); break;
+    case 'started': onStarted(msg);  break;
+    case 'stopped': onStopped(msg);  break;
+    case 'killed':
+      onStopped({ log: '—', msgs: 0, size_kb: 0 });
+      dot.className = '';
+      break;
+  }
+}
+
+// ── CAN ID pane ──────────────────────────────────────────────────────────────
+function updateCanID(msg) {
+  const { id, count, payload, last_ms } = msg;
+  let entry = canidRows[id];
+
+  if (!entry) {
+    // New row — insert in sorted order
+    const row = document.createElement('div');
+    row.className = 'canid-row';
+    row.innerHTML =
+      `<span class="canid-id">${id}</span>` +
+      `<span class="canid-count">${count.toLocaleString()}</span>` +
+      `<span class="canid-data">${payload}</span>` +
+      `<span class="canid-ms">${last_ms > 0 ? last_ms : '—'}</span>`;
+
+    // Find insertion point (sorted hex)
+    canidSortedIds.push(id);
+    canidSortedIds.sort();
+    const idx = canidSortedIds.indexOf(id);
+    if (idx === canidSortedIds.length - 1) {
+      canidTable.appendChild(row);
+    } else {
+      const nextId  = canidSortedIds[idx + 1];
+      const nextRow = canidRows[nextId] && canidRows[nextId].el;
+      if (nextRow) canidTable.insertBefore(row, nextRow);
+      else canidTable.appendChild(row);
+    }
+
+    canidRows[id] = { el: row, flashTimer: null };
+    entry = canidRows[id];
+    canidCount.textContent = Object.keys(canidRows).length;
+    statIds.textContent = Object.keys(canidRows).length;
+  }
+
+  // Update cells
+  const cells = entry.el.children;
+  cells[1].textContent = count.toLocaleString();
+  cells[2].textContent = payload;
+
+  const msEl = cells[3];
+  msEl.textContent = last_ms > 0 ? last_ms : '—';
+  msEl.className = 'canid-ms' +
+    (last_ms > 0 && last_ms < 50  ? ' fast' :
+     last_ms > 0 && last_ms > 500 ? ' slow' : '');
+
+  // Flash row green on update
+  entry.el.classList.add('flash');
+  clearTimeout(entry.flashTimer);
+  entry.flashTimer = setTimeout(() => entry.el.classList.remove('flash'), 300);
+}
+
+// ── Signal pane ──────────────────────────────────────────────────────────────
+function updateSignal(msg) {
+  const { pid, name, unit, value, min, max, can_id } = msg;
+  let entry = sigRows[pid];
+
+  const fmtVal = v => {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'string') return v;   // VIN
+    return typeof v === 'number' ? v.toLocaleString(undefined, {maximumFractionDigits: 2}) : v;
+  };
+
+  if (!entry) {
+    const row = document.createElement('div');
+    row.className = 'sig-row';
+    row.innerHTML =
+      `<span class="sig-name">${name}</span>` +
+      `<span class="sig-canid">${can_id || '—'}</span>` +
+      `<span class="sig-value ${pid === '09_02' ? 'vin' : ''}">${fmtVal(value)}${unit ? ' ' + unit : ''}</span>` +
+      `<span class="sig-min">${fmtVal(min)}</span>` +
+      `<span class="sig-max">${fmtVal(max)}</span>`;
+    sigTable.appendChild(row);
+    sigRows[pid] = { el: row, flashTimer: null };
+    entry = sigRows[pid];
+    sigCount.textContent = Object.keys(sigRows).length;
+  }
+
+  const cells = entry.el.children;
+  cells[1].textContent = can_id || '—';
+  cells[2].textContent = fmtVal(value) + (unit ? ' ' + unit : '');
+  cells[3].textContent = fmtVal(min);
+  cells[4].textContent = fmtVal(max);
+
+  if (value !== null && value !== undefined) {
+    entry.el.classList.remove('no-data');
+  }
+
+  // Flash row blue on update
+  entry.el.classList.add('flash');
+  clearTimeout(entry.flashTimer);
+  entry.flashTimer = setTimeout(() => entry.el.classList.remove('flash'), 400);
+}
+
+// ── Start / Stop ─────────────────────────────────────────────────────────────
+btnStart.addEventListener('click', async () => {
+  const channel = selChannel.value;
+  if (!channel) { toast('Select a channel first', 'red'); return; }
+
+  const r = await fetch('/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      channel,
+      bitrate: parseInt(selBitrate.value),
+      passive: togPassive.checked,
+      fd:      togFD.checked,
+      fmt:     selFmt.value,
+      note:    document.getElementById('inp-note').value.trim(),
+    }),
+  });
+  const d = await r.json();
+  if (!d.ok) toast('Error: ' + d.error, 'red');
+});
+
+btnStop.addEventListener('click', async () => {
+  await fetch('/stop', { method: 'POST' });
+});
+
+function onStarted(msg) {
+  scan();
+  running = true;
+  startTime = Date.now();
+  errorCount = 0;
+  msgCount = 0;
+
+  // Clear stale CAN ID / signal tables
+  clearAnalysisPanes();
+
+  dot.className = 'online';
+  badgeCh.textContent   = msg.channel;
+  badgeCh.className     = 'badge cyan';
+  badgeBr.textContent   = fmtBitrate(msg.bitrate);
+  badgeBr.className     = 'badge green';
+  badgeMode.textContent = msg.passive ? 'PASSIVE' : 'ACTIVE';
+  badgeMode.className   = 'badge ' + (msg.passive ? 'yellow' : 'green');
+  logFilename.textContent = msg.log;
+
+  btnStart.disabled = true;
+  btnStop.disabled  = false;
+  setControlsEnabled(false);
+
+  elapsedTimer = setInterval(updateElapsed, 1000);
+  toast(`Logging started → ${msg.log}`, 'green');
+}
+
+function onStopped(msg) {
+  scan();
+  document.getElementById('inp-note').value = '';
+  running = false;
+
+  dot.className = '';
+  badgeCh.className   = 'badge';
+  badgeBr.className   = 'badge';
+  badgeMode.className = 'badge';
+
+  btnStart.disabled = false;
+  btnStop.disabled  = true;
+  setControlsEnabled(true);
+
+  clearInterval(elapsedTimer);
+  if (msg.msgs) {
+    toast(`Stopped. ${msg.msgs.toLocaleString()} msgs → ${msg.log} (${msg.size_kb} KB)`, 'green');
+  }
+}
+
+function clearAnalysisPanes() {
+  // Clear CAN ID pane
+  canidTable.innerHTML = '';
+  Object.keys(canidRows).forEach(k => delete canidRows[k]);
+  canidSortedIds.length = 0;
+  canidCount.textContent = '0';
+  statIds.textContent = '0';
+
+  // Clear signal pane
+  sigTable.innerHTML = '';
+  Object.keys(sigRows).forEach(k => delete sigRows[k]);
+  sigCount.textContent = '0';
+}
+
+function setControlsEnabled(enabled) {
+  selChannel.disabled = !enabled;
+  selBitrate.disabled = !enabled;
+  selFmt.disabled     = !enabled;
+  togPassive.disabled = !enabled;
+  togFD.disabled      = !enabled;
+  btnScan.disabled    = !enabled;
+  document.getElementById('inp-note').disabled = !enabled;
+}
+
+// ── Frame rendering ──────────────────────────────────────────────────────────
+function addFrame(f) {
+  msgCount = f.n;
+  if (f.err) errorCount++;
+
+  const now = Date.now();
+  rateWindow.push(now);
+  while (rateWindow.length > 0 && now - rateWindow[0] > 2000) rateWindow.shift();
+
+  statMsgs.textContent   = msgCount.toLocaleString();
+  statRate.textContent   = (rateWindow.length / 2).toFixed(1);
+  statErrors.textContent = errorCount.toLocaleString();
+
+  if (!passesFilter(f) || paused) return;
+
+  const row = document.createElement('div');
+  let cls = 'msg-row ' + (f.xtd ? 'xtd' : 'std');
+  if (f.err) cls += ' err';
+  if (f.fd)  cls += ' fd';
+  if (f.rtr) cls += ' rtr';
+  row.className = cls;
+  row.innerHTML =
+    `<span class="col-n">${f.n}</span>` +
+    `<span class="col-t">${f.t.toFixed(4)}</span>` +
+    `<span class="col-id">${f.id}</span>` +
+    `<span class="col-dl">${f.dl}</span>` +
+    `<span class="col-data">${f.data}</span>` +
+    `<span class="col-flags">${f.flags}</span>`;
+
+  msgTable.appendChild(row);
+  rows.push(row);
+
+  if (rows.length > MAX_ROWS) rows.shift().remove();
+  if (togScroll.checked) msgTable.scrollTop = msgTable.scrollHeight;
+}
+
+function passesFilter(f) {
+  if (filterErr.checked && f.err) return false;
+  if (f.dl < parseInt(filterDL.value)) return false;
+  const raw = filterInput.value.trim();
+  if (raw) {
+    const fid = parseInt(raw, 16);
+    if (!isNaN(fid) && fid !== parseInt(f.id, 16)) return false;
+  }
+  return true;
+}
+
+// ── Elapsed timer ─────────────────────────────────────────────────────────────
+function updateElapsed() {
+  if (!startTime) return;
+  const s   = Math.floor((Date.now() - startTime) / 1000);
+  const h   = Math.floor(s / 3600);
+  const m   = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  statElapsed.textContent =
+    `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+btnScan.addEventListener('click', scan);
+
+document.getElementById('btn-kill').addEventListener('click', async () => {
+  if (!confirm('Force-close any open CAN connection?')) return;
+  await fetch('/kill', { method: 'POST' });
+  toast('Connection killed', 'red');
+});
+
+btnClear.addEventListener('click', () => {
+  msgTable.innerHTML = '';
+  rows = [];
+  errorCount = 0;
+  statErrors.textContent = '0';
+});
+
+togPause.addEventListener('change', () => {
+  paused = togPause.checked;
+  pausedBanner.style.display = paused ? 'block' : 'none';
+});
+
+function fmtBitrate(bps) {
+  if (bps >= 1_000_000) return (bps / 1_000_000) + ' Mbit/s';
+  return (bps / 1_000) + ' kbit/s';
+}
+
+// ── Library status ────────────────────────────────────────────────────────────
+async function loadLibraryStatus() {
+  try {
+    const r = await fetch('/library');
+    const d = await r.json();
+    const badge = document.getElementById('lib-badge');
+    const layers = [];
+    if (d.entries > 0)          layers.push(`${d.entries} lib`);
+    if (d.j1979_pids.length)    layers.push(`J1979`);
+    if (d.j1979_2_dids.length)  layers.push(`J1979-2`);
+    badge.textContent = layers.join(' · ');
+    badge.style.color = d.entries > 0 ? 'var(--green)' : 'var(--yellow)';
+    const ids = d.can_ids.length ? d.can_ids.join(', ') : 'none';
+    badge.title = `Library: ${d.path || 'not found'}\nWatching CAN IDs: ${ids}`;
+  } catch (e) { /* server not ready yet */ }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+connectWS();
+scan();
+loadLibraryStatus();
+</script>
+</body>
+</html>

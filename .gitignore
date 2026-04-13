@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+logs/
+*.trc
+*.asc
+*.blf
+*.csv
+*.log
+signal_library.json
