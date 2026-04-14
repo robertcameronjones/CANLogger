@@ -4,10 +4,16 @@ CAN Logger — Web UI backend.
 Serves index.html and streams CAN frames, CAN ID stats, and decoded signals
 to the browser via WebSocket.
 
-Signal decoding layers (in priority order):
-  1. Vehicle-specific entries from signal_library.json (CAN Log Splitter)
-  2. J1979-2 (SAE) — Mode 22 / UDS ReadDataByIdentifier (0x62 response)
-  3. J1979   (SAE) — Mode 01 / OBD-II generic PIDs (0x41 response)
+Signal decoding layers (standards first, vehicle library as fallback):
+  1. J1979   (SAE) — Mode 01 / OBD-II generic PIDs   (0x41 response)
+  2. J1979-2 (SAE) — Mode 22 / UDS F4xx DIDs          (0x62 response)
+  3. signal_library.json — vehicle-specific PIDs/DIDs  (fallback)
+
+ISO-TP (ISO 15765-2) reassembly is handled inline before decoding:
+  - Single frames passed through directly.
+  - Multi-frame (First Frame + Consecutive Frames) reassembled per source ECU.
+  - Flow Control (CTS) sent automatically when bus is in active mode.
+  - Supports both 11-bit (standard OBD-II) and 29-bit (extended) addressing.
 
 Usage:
     ./start.sh        ← recommended
@@ -312,6 +318,120 @@ async def _send_all(payload: str):
 # CAN listener
 # ──────────────────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ISO-TP reassembler (ISO 15765-2)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class _ISOTPReassembler:
+    """
+    Lightweight ISO-TP reassembler.  No external library required.
+
+    All frames for every source ECU pass through here.  Returns a complete
+    reassembled application-layer payload when a sequence finishes, or None
+    while still collecting.
+
+    After reassembly the payload is protocol-layer bytes with the ISO-TP
+    framing stripped, e.g.:
+        Mode 01 response → [0x41, PID, A, B, ...]
+        Mode 22 response → [0x62, DID_H, DID_L, A, B, ...]
+        Mode 09 VIN      → [0x49, 0x02, 0x01, V, I, N, ...]
+
+    Flow Control (CTS) frames are sent automatically when the bus reference
+    is provided and the session is in active (non-passive) mode.
+    """
+
+    def __init__(self):
+        # { src_id_str → {total, data, next_sn} }
+        self._bufs: dict[str, dict] = {}
+
+    def feed(self, src_id: str, src_int: int, is_ext: bool,
+             raw: list[int], bus) -> list[int] | None:
+        if not raw:
+            return None
+
+        nibble = (raw[0] >> 4) & 0x0F
+
+        # ── Single Frame (SF) ────────────────────────────────────────────────
+        if nibble == 0x0:
+            length = raw[0] & 0x0F
+            if length == 0 or len(raw) < length + 1:
+                return None
+            self._bufs.pop(src_id, None)
+            return raw[1:1 + length]
+
+        # ── First Frame (FF) ─────────────────────────────────────────────────
+        if nibble == 0x1:
+            if len(raw) < 2:
+                return None
+            total = ((raw[0] & 0x0F) << 8) | raw[1]
+            self._bufs[src_id] = {
+                "total": total,
+                "data":  list(raw[2:]),
+                "sn":    1,
+            }
+            self._send_fc(src_int, is_ext, bus)
+            return None
+
+        # ── Consecutive Frame (CF) ───────────────────────────────────────────
+        if nibble == 0x2:
+            buf = self._bufs.get(src_id)
+            if buf is None:
+                return None
+            sn = raw[0] & 0x0F
+            if sn != buf["sn"] % 16:
+                self._bufs.pop(src_id, None)   # sequence error — discard
+                return None
+            buf["data"].extend(raw[1:])
+            buf["sn"] += 1
+            if len(buf["data"]) >= buf["total"]:
+                payload = buf["data"][:buf["total"]]
+                self._bufs.pop(src_id, None)
+                return payload
+            return None
+
+        # FC and unknown frame types — not application data
+        return None
+
+    def _send_fc(self, src_int: int, is_ext: bool, bus):
+        """Send a Flow Control (Continue To Send) frame back to the ECU."""
+        if bus is None:
+            return
+        tx_id = self._fc_tx_id(src_int, is_ext)
+        if tx_id is None:
+            return
+        fc = bytes([0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        try:
+            bus.send(can.Message(arbitration_id=tx_id, data=fc,
+                                 is_extended_id=is_ext, is_fd=False))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _fc_tx_id(rx_id: int, is_ext: bool) -> int | None:
+        """
+        Derive the tester TX address from the ECU's response address.
+
+        11-bit (standard): ECU responds on 0x7E8–0x7EF → tester sends on
+                           0x7E0–0x7E7 (rx_id − 8).
+
+        29-bit (extended): ECU responds on 0x18DAF1{ECU} → tester sends on
+                           0x18DA{ECU}F1 (swap last two address bytes).
+        """
+        if not is_ext:
+            if 0x7E8 <= rx_id <= 0x7EF:
+                return rx_id - 8
+            return None
+        # 29-bit: bytes are 0x18 0xDA {tester} {ecu}
+        ecu_addr    = rx_id & 0xFF
+        tester_addr = (rx_id >> 8) & 0xFF
+        return (rx_id & 0xFFFF0000) | (ecu_addr << 8) | tester_addr
+
+    def clear(self):
+        self._bufs.clear()
+
+
+_isotp = _ISOTPReassembler()
+
 class _CANListener(can.Listener):
     _canid_throttle: dict[str, float] = {}
     _CANID_MIN_INTERVAL = 0.25   # max 4 CAN-ID table updates/s per ID
@@ -377,31 +497,39 @@ class _CANListener(can.Listener):
                 "last_ms": e.get("last_ms", 0),
             })
 
-        if len(data_bytes) < 3 or msg.is_error_frame:
+        if msg.is_error_frame or len(data_bytes) < 2:
             return
 
-        # ── Signal decoding — three layers ──────────────────────────────────
-        self._decode_frame(id_str, data_bytes)
+        # ── ISO-TP reassembly → signal decoding ──────────────────────────────
+        # Pass the bus only when active (non-passive) so FC frames are sent.
+        bus = _state["bus"] if not _state.get("passive") else None
+        payload = _isotp.feed(id_str, msg.arbitration_id,
+                              msg.is_extended_id, data_bytes, bus)
+        if payload is not None:
+            self._decode_frame(id_str, payload)
 
     def _decode_frame(self, id_str: str, data: list[int]):
         """
-        Decode in standards-first order; vehicle library is the fallback:
-          1. J1979   — Mode 01 / 0x41 response  (SAE standard PIDs)
-          2. J1979-2 — Mode 22 / 0x62 response  (SAE F4xx DIDs)
-          3. Vehicle signal_library.json         (vehicle-specific / proprietary)
-        VIN (Mode 09 / 0x49) handled separately at any layer.
+        Decode a fully reassembled ISO-TP payload.
+
+        After ISO-TP stripping, data[0] is the service/mode byte:
+          Mode 01 response → [0x41, PID, A, B, ...]
+          Mode 22 response → [0x62, DID_H, DID_L, A, B, ...]
+          Mode 09 VIN      → [0x49, 0x02, 0x01, V, I, N, ...]
+
+        Standards first; vehicle library is the fallback.
         """
         if len(data) < 2:
             return
-        mode_byte = data[1]
-        decoded_key: str | None = None   # set if a standard layer succeeds
+        mode_byte = data[0]          # ← reassembled payload, no length prefix
+        decoded_key: str | None = None
 
         # Layer 1 — J1979 standard PIDs (Mode 01 / 0x41) ---------------------
-        if mode_byte == 0x41 and len(data) >= 3:
-            pid_str = f"{data[2]:02X}"
+        if mode_byte == 0x41 and len(data) >= 2:
+            pid_str = f"{data[1]:02X}"
             sig1 = J1979_PIDS.get(pid_str)
             if sig1:
-                raw = _bytes_to_int(data[3:], sig1["nbytes"])
+                raw = _bytes_to_int(data[2:], sig1["nbytes"])
                 if raw is not None:
                     decoded_key = f"j1979_{pid_str}"
                     val = raw * sig1["mul"] + sig1["off"]
@@ -409,52 +537,49 @@ class _CANListener(can.Listener):
                                          sig1["unit"], val, id_str)
 
         # Layer 2 — J1979-2 standard DIDs (Mode 22 / 0x62, F4xx range) -------
-        elif mode_byte == 0x62 and len(data) >= 4:
-            did_str = f"{data[2]:02X}{data[3]:02X}"
+        elif mode_byte == 0x62 and len(data) >= 3:
+            did_str = f"{data[1]:02X}{data[2]:02X}"
             sig2 = J1979_2_DIDS.get(did_str)
             if sig2:
-                raw = _bytes_to_int(data[4:], sig2["nbytes"])
+                raw = _bytes_to_int(data[3:], sig2["nbytes"])
                 if raw is not None:
                     decoded_key = f"j19792_{did_str}"
                     val = raw * sig2["mul"] + sig2["off"]
                     self._update_and_emit(decoded_key, sig2["name"],
                                          sig2["unit"], val, id_str)
 
-        # VIN — Mode 09 PID 02 response (0x49) — handled at any layer --------
-        elif mode_byte == 0x49 and len(data) >= 3 and data[2] == 0x02:
-            s = _decode_string(data[3:])
-            if s:
+        # VIN — Mode 09 PID 02 response (0x49) --------------------------------
+        # Reassembled payload: [0x49, 0x02, count, VIN_char×17]
+        elif mode_byte == 0x49 and len(data) >= 3 and data[1] == 0x02:
+            # data[2] = number of data items (always 0x01); VIN starts at [3]
+            vin_bytes = data[3:] if len(data) > 3 else data[2:]
+            vin = "".join(chr(b) for b in vin_bytes
+                          if 0x20 <= b <= 0x7E and chr(b).isalnum())[:17]
+            if len(vin) >= 5:
                 with _signals_lock:
-                    entry = _signals.setdefault("vin", {
-                        "name": "VIN", "unit": "", "can_id": id_str,
-                        "value": "", "min": None, "max": None,
-                    })
-                    existing = entry.get("value") or ""
-                    for ch in s:
-                        if ch not in existing:
-                            existing += ch
-                    entry["value"] = existing[:17]
-                    entry["can_id"] = id_str
+                    _signals["vin"] = {"name": "VIN", "unit": "",
+                                       "can_id": id_str, "value": vin,
+                                       "min": None, "max": None}
                 _broadcast({"type": "signal", "pid": "vin",
-                            "name": "VIN", "unit": "",
-                            "value": entry["value"], "min": None, "max": None,
-                            "can_id": id_str})
+                            "name": "VIN", "unit": "", "value": vin,
+                            "min": None, "max": None, "can_id": id_str})
             decoded_key = "vin"
 
         # Layer 3 — vehicle signal_library.json (fallback) -------------------
-        # Only reached when neither J1979 nor J1979-2 claimed this frame.
+        # Consulted only when J1979 / J1979-2 did not claim this payload.
+        # After reassembly: mode=data[0], pid/did bytes start at data[1].
         if decoded_key is None:
             for sig in _lib_by_canid.get(id_str, []):
                 if mode_byte != sig["response_byte"]:
                     continue
                 pid_bytes = sig["pid_bytes"]
                 n_pid = len(pid_bytes)
-                if len(data) < 2 + n_pid:
+                if len(data) < 1 + n_pid:
                     continue
-                if data[2:2 + n_pid] != pid_bytes:
+                if data[1:1 + n_pid] != pid_bytes:
                     continue
 
-                value_data = data[2 + n_pid:]
+                value_data = data[1 + n_pid:]
                 key = (f"lib_{id_str}_{sig['response_byte']:02X}_"
                        f"{''.join(f'{b:02X}' for b in pid_bytes)}")
 
@@ -551,6 +676,7 @@ async def start(config: dict):
         _can_ids.clear()
     with _signals_lock:
         _signals.clear()
+    _isotp.clear()
 
     listeners = [_CANListener(), Logger(str(log_path))]
     notifier  = Notifier(bus, listeners)
