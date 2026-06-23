@@ -330,6 +330,9 @@
   .msg-row.std .col-id { color: #8ecae6; }
   .msg-row.err { color: var(--red); }
   .msg-row.fd  .col-flags { color: var(--blue); }
+  .msg-row.tx                   { opacity: 0.75; }
+  .msg-row.tx .col-id           { color: #f0a030; }
+  .msg-row.tx .col-flags        { color: #f0a030; font-weight: 600; }
   .msg-row.rtr { color: var(--yellow); }
   .col-n     { color: var(--text-mute); }
   .col-t     { color: var(--text-dim); }
@@ -363,14 +366,14 @@
   .canid-ms.slow { color: var(--yellow); }
 
   /* ── SIGNAL PANE ─────────────────────────────────────────── */
-  #pane-signal { width: 310px; min-width: 260px; }
+  #pane-signal { width: 380px; min-width: 300px; }
 
-  #sig-head { grid-template-columns: 1fr 68px 72px 60px 60px; }
+  #sig-head { grid-template-columns: 1fr 76px 80px 64px 64px; }
   #sig-table { flex: 1; overflow-y: auto; }
 
   .sig-row {
     display: grid;
-    grid-template-columns: 1fr 68px 72px 60px 60px;
+    grid-template-columns: 1fr 76px 80px 64px 64px;
     padding: 4px 10px;
     font-family: var(--font-mono);
     font-size: 11px;
@@ -390,6 +393,59 @@
 
   /* ── SEPARATOR ───────────────────────────────────────────── */
   hr.divider { border: none; border-top: 1px solid var(--border); margin: 3px 0; }
+
+  /* ── SCAN SECTION ────────────────────────────────────────── */
+  .btn-scan-go {
+    background: var(--purple);
+    color: #fff;
+  }
+  .btn-scan-go:hover:not(:disabled) { background: #cfa0ff; }
+  .btn-scan-kill {
+    background: var(--surface2);
+    color: var(--red);
+    border: 1px solid var(--red);
+    width: auto;
+    padding: 6px 10px;
+    flex-shrink: 0;
+  }
+  .btn-scan-kill:hover:not(:disabled) { background: #2a1111; }
+
+  #scan-log-box {
+    margin-top: 6px;
+    max-height: 88px;
+    overflow-y: auto;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-mute);
+    line-height: 1.6;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 6px;
+  }
+  #scan-log-box .sl-line { display: block; }
+  #scan-log-box .sl-line.ok   { color: var(--green); }
+  #scan-log-box .sl-line.warn { color: var(--yellow); }
+  #scan-log-box .sl-line.err  { color: var(--red); }
+
+  #scan-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .scan-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 10px;
+  }
+  .scan-meta-label { color: var(--text-mute); }
+  .scan-meta-val   { font-family: var(--font-mono); color: var(--text-dim); }
 
   /* ── BUTTONS ─────────────────────────────────────────────── */
   .btn-start { background: var(--green); color: #000; }
@@ -576,6 +632,47 @@
       </div>
     </div>
 
+    <hr class="divider">
+
+    <div>
+      <div class="section-label">Vehicle Scan</div>
+
+      <div style="display:flex; gap:6px; margin-bottom:6px">
+        <button class="btn btn-scan-go" id="btn-scan-vehicle" style="flex:1" disabled>
+          ▶ Scan Vehicle
+        </button>
+        <button class="btn btn-scan-kill" id="btn-scan-stop" disabled title="Stop scan">■</button>
+      </div>
+      <div style="display:flex; gap:6px; margin-bottom:6px">
+        <button class="btn" id="btn-sweep" style="flex:1;background:#444;color:#e8a000;border:1px solid #666" disabled>
+          ⚡ Sweep ECUs
+        </button>
+      </div>
+
+      <div id="scan-meta" style="display:none">
+        <div class="scan-meta-row">
+          <span class="scan-meta-label">Phase</span>
+          <span class="scan-meta-val" id="scan-phase">—</span>
+        </div>
+        <div class="scan-meta-row">
+          <span class="scan-meta-label">Addressing</span>
+          <span class="scan-meta-val" id="scan-addr">—</span>
+        </div>
+        <div class="scan-meta-row">
+          <span class="scan-meta-label">VIN</span>
+          <span class="scan-meta-val" id="scan-vin"
+                style="letter-spacing:0.04em">—</span>
+        </div>
+        <div class="scan-meta-row">
+          <span class="scan-meta-label">Profile</span>
+          <span class="scan-meta-val" id="scan-profile"
+                style="max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</span>
+        </div>
+      </div>
+
+      <div id="scan-log-box"></div>
+    </div>
+
   </div><!-- /sidebar -->
 
   <!-- ── LOG PANE ──────────────────────────────────────────── -->
@@ -641,8 +738,8 @@
       <span>Signal</span>
       <span>CAN ID</span>
       <span style="text-align:right;padding-right:4px">Value</span>
-      <span style="text-align:right;padding-right:4px">Min</span>
-      <span style="text-align:right">Max</span>
+      <span style="text-align:right;padding-right:4px">Min / First</span>
+      <span style="text-align:right">Max / Prev</span>
     </div>
 
     <div id="sig-table"></div>
@@ -701,8 +798,19 @@ const filterInput = document.getElementById('filter-input');
 const filterDL    = document.getElementById('filter-dl');
 const filterErr   = document.getElementById('filter-err');
 const pausedBanner= document.getElementById('paused-banner');
-const canidCount  = document.getElementById('canid-count');
-const sigCount    = document.getElementById('sig-count');
+const canidCount      = document.getElementById('canid-count');
+const sigCount        = document.getElementById('sig-count');
+const btnScanVehicle  = document.getElementById('btn-scan-vehicle');
+const btnScanStop     = document.getElementById('btn-scan-stop');
+const btnSweep        = document.getElementById('btn-sweep');
+const scanMeta        = document.getElementById('scan-meta');
+const scanPhaseEl     = document.getElementById('scan-phase');
+const scanAddrEl      = document.getElementById('scan-addr');
+const scanVinEl       = document.getElementById('scan-vin');
+const scanProfileEl   = document.getElementById('scan-profile');
+const scanLogBox      = document.getElementById('scan-log-box');
+
+let scanRunning = false;
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 let toastTimer = null;
@@ -767,11 +875,12 @@ function connectWS() {
 
 function handleServerMsg(msg) {
   switch (msg.type) {
-    case 'frame':   addFrame(msg);   break;
-    case 'canid':   updateCanID(msg); break;
-    case 'signal':  updateSignal(msg); break;
-    case 'started': onStarted(msg);  break;
-    case 'stopped': onStopped(msg);  break;
+    case 'frame':    addFrame(msg);       break;
+    case 'canid':    updateCanID(msg);    break;
+    case 'signal':   updateSignal(msg);   break;
+    case 'started':  onStarted(msg);      break;
+    case 'stopped':  onStopped(msg);      break;
+    case 'scan_log': onScanLog(msg);      break;
     case 'killed':
       onStopped({ log: '—', msgs: 0, size_kb: 0 });
       dot.className = '';
@@ -897,6 +1006,109 @@ btnStop.addEventListener('click', async () => {
   await fetch('/stop', { method: 'POST' });
 });
 
+// ── Vehicle scan controls ─────────────────────────────────────────────────────
+function onScanLog(msg) {
+  // Update meta panel
+  const phase = msg.phase || 'idle';
+  const phaseLabels = { preamble: 'PREAMBLE', vin: 'VIN', loop: 'LOOP', idle: 'IDLE' };
+  const phaseColors = { preamble: 'var(--yellow)', vin: 'var(--blue)', loop: 'var(--green)', idle: 'var(--text-mute)' };
+  scanPhaseEl.textContent = phaseLabels[phase] || phase.toUpperCase();
+  scanPhaseEl.style.color = phaseColors[phase] || 'var(--text-dim)';
+
+  if (msg.addressing) {
+    scanAddrEl.textContent = msg.addressing === '29bit' ? '29-bit' : '11-bit';
+    scanAddrEl.style.color = msg.addressing === '29bit' ? 'var(--cyan)' : 'var(--blue)';
+  }
+  if (msg.vin) {
+    scanVinEl.textContent = msg.vin;
+    scanVinEl.style.color = 'var(--green)';
+  }
+
+  scanMeta.style.display = 'flex';
+
+  // Detect whether scan is still running from phase
+  const wasRunning = scanRunning;
+  scanRunning = (phase !== 'idle');
+  if (wasRunning !== scanRunning) updateScanButtons();
+
+  // Append log line
+  const line = document.createElement('span');
+  line.className = 'sl-line' +
+    (msg.msg.includes('✓') || msg.msg.includes('confirmed') ? ' ok' :
+     msg.msg.includes('no response') || msg.msg.includes('error') ? ' warn' : '');
+  line.textContent = msg.msg;
+  scanLogBox.appendChild(line);
+  scanLogBox.appendChild(document.createElement('br'));
+  // Keep last 60 lines
+  while (scanLogBox.children.length > 120) scanLogBox.removeChild(scanLogBox.firstChild);
+  scanLogBox.scrollTop = scanLogBox.scrollHeight;
+}
+
+function updateScanButtons() {
+  const canScan = running && !togPassive.checked;
+  btnScanVehicle.disabled = !canScan || scanRunning;
+  btnScanStop.disabled    = !scanRunning;
+  btnSweep.disabled       = !canScan || scanRunning;
+  btnScanVehicle.textContent = scanRunning ? '… Scanning' : '▶ Scan Vehicle';
+}
+
+btnScanVehicle.addEventListener('click', async () => {
+  const r = await fetch('/scan/start', { method: 'POST' });
+  const d = await r.json();
+  if (!d.ok) {
+    toast('Scan error: ' + d.error, 'red');
+    return;
+  }
+  scanRunning = true;
+  scanLogBox.innerHTML = '';
+  scanMeta.style.display = 'flex';
+  scanVinEl.textContent     = '—';
+  scanAddrEl.textContent    = '—';
+  scanPhaseEl.textContent   = 'PREAMBLE';
+  scanPhaseEl.style.color   = 'var(--yellow)';
+  scanProfileEl.textContent = '—';
+  updateScanButtons();
+  toast('Scan started', 'green');
+});
+
+btnScanStop.addEventListener('click', async () => {
+  await fetch('/scan/stop', { method: 'POST' });
+  scanRunning = false;
+  updateScanButtons();
+  toast('Scan stopped');
+});
+
+btnSweep.addEventListener('click', async () => {
+  const r = await fetch('/scan/sweep', { method: 'POST' });
+  const d = await r.json();
+  if (!d.ok) { toast('Sweep error: ' + d.error, 'red'); return; }
+  scanRunning = true;
+  scanLogBox.innerHTML = '';
+  scanMeta.style.display = 'flex';
+  scanPhaseEl.textContent = 'SWEEP';
+  scanPhaseEl.style.color = 'var(--yellow)';
+  updateScanButtons();
+  toast('ECU sweep started', 'green');
+});
+
+// Poll scan status to pick up profile name (not in WS stream yet)
+async function pollScanStatus() {
+  if (!scanRunning) return;
+  try {
+    const r = await fetch('/scan/status');
+    const d = await r.json();
+    if (d.profile && d.profile.name) {
+      scanProfileEl.textContent = d.profile.name;
+      scanProfileEl.style.color = 'var(--cyan)';
+    }
+    if (!d.running && scanRunning) {
+      scanRunning = false;
+      updateScanButtons();
+    }
+  } catch (_) {}
+}
+setInterval(pollScanStatus, 2000);
+
 function onStarted(msg) {
   scan();
   running = true;
@@ -919,6 +1131,7 @@ function onStarted(msg) {
   btnStart.disabled = true;
   btnStop.disabled  = false;
   setControlsEnabled(false);
+  updateScanButtons();
 
   elapsedTimer = setInterval(updateElapsed, 1000);
   toast(`Logging started → ${msg.log}`, 'green');
@@ -929,6 +1142,12 @@ function onStopped(msg) {
   document.getElementById('inp-note').value = '';
   running = false;
 
+  // Stop any active scan
+  if (scanRunning) {
+    fetch('/scan/stop', { method: 'POST' });
+    scanRunning = false;
+  }
+
   dot.className = '';
   badgeCh.className   = 'badge';
   badgeBr.className   = 'badge';
@@ -937,6 +1156,7 @@ function onStopped(msg) {
   btnStart.disabled = false;
   btnStop.disabled  = true;
   setControlsEnabled(true);
+  updateScanButtons();
 
   clearInterval(elapsedTimer);
   if (msg.msgs) {
@@ -988,6 +1208,7 @@ function addFrame(f) {
   if (f.err) cls += ' err';
   if (f.fd)  cls += ' fd';
   if (f.rtr) cls += ' rtr';
+  if (f.flags && f.flags.startsWith('TX')) cls += ' tx';
   row.className = cls;
   row.innerHTML =
     `<span class="col-n">${f.n}</span>` +
@@ -1046,6 +1267,8 @@ togPause.addEventListener('change', () => {
   paused = togPause.checked;
   pausedBanner.style.display = paused ? 'block' : 'none';
 });
+
+togPassive.addEventListener('change', updateScanButtons);
 
 function fmtBitrate(bps) {
   if (bps >= 1_000_000) return (bps / 1_000_000) + ' Mbit/s';

@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Vehicle CAN Signal Summary</title>
+<style>
+  :root {
+    --bg:       #0d1117;
+    --surface:  #161b22;
+    --surface2: #1c2330;
+    --border:   #30363d;
+    --cyan:     #39d0c8;
+    --green:    #3fb950;
+    --red:      #f85149;
+    --yellow:   #e3b341;
+    --blue:     #58a6ff;
+    --purple:   #bc8cff;
+    --orange:   #f0883e;
+    --text:     #e6edf3;
+    --dim:      #8b949e;
+    --mute:     #484f58;
+    --mono:     "SF Mono","JetBrains Mono","Fira Code",Consolas,monospace;
+    --ui:       -apple-system,"Segoe UI",system-ui,sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--ui); font-size: 13px;
+    padding: 32px 40px; min-width: 1200px;
+  }
+  h1 {
+    font-size: 20px; font-weight: 700; color: var(--cyan);
+    letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px;
+  }
+  .subtitle {
+    color: var(--dim); font-size: 12px; margin-bottom: 28px; line-height: 1.6;
+  }
+  .subtitle code { font-family: var(--mono); color: var(--orange); font-size: 11px; }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 20px; margin-bottom: 24px;
+    flex-wrap: wrap; align-items: center;
+  }
+  .legend-item {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--dim);
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+
+  /* Tables */
+  .section-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--mute);
+    margin: 32px 0 10px;
+  }
+  table {
+    width: 100%; border-collapse: collapse;
+    margin-bottom: 40px;
+    font-size: 12px;
+  }
+  thead tr { background: var(--surface2); }
+  thead th {
+    padding: 9px 12px; text-align: left;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: var(--mute);
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid var(--surface2); }
+  tbody tr:hover { background: var(--surface); }
+  td {
+    padding: 9px 12px; vertical-align: top;
+    line-height: 1.5;
+  }
+
+  /* Cell helpers */
+  .vehicle-name { font-weight: 600; color: var(--text); }
+  .vehicle-year { color: var(--dim); font-size: 11px; }
+  .vin-prefix   { font-family: var(--mono); font-size: 10px; color: var(--mute); }
+
+  .badge {
+    display: inline-block; padding: 1px 7px; border-radius: 4px;
+    font-family: var(--mono); font-size: 10px; font-weight: 600;
+    white-space: nowrap;
+  }
+  .b-11  { background: #1c2d1c; color: var(--green);  border: 1px solid #2a4a2a; }
+  .b-29  { background: #1a2435; color: var(--blue);   border: 1px solid #1e3a5f; }
+  .b-na  { background: var(--surface2); color: var(--mute); border: 1px solid var(--border); }
+
+  .can-id {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--cyan); white-space: nowrap;
+  }
+  .can-id.ext { color: var(--blue); }
+
+  .sig-block { margin-bottom: 4px; }
+  .sig-ecu   { font-family: var(--mono); font-size: 10px; color: var(--cyan); }
+  .sig-ecu.ext { color: var(--blue); }
+  .sig-pid   { font-family: var(--mono); font-size: 10px; color: var(--orange); }
+  .sig-val   { font-size: 11px; color: var(--dim); }
+  .sig-method{ font-size: 10px; color: var(--purple); }
+
+  .na    { color: var(--mute); font-style: italic; font-size: 11px; }
+  .note  { font-size: 10px; color: var(--yellow); margin-top: 2px; }
+  .multi { font-size: 10px; color: var(--green); }
+
+  .ecus-cell { display: flex; flex-direction: column; gap: 2px; }
+
+  .footer {
+    margin-top: 16px; padding-top: 16px;
+    border-top: 1px solid var(--border);
+    color: var(--mute); font-size: 11px; line-height: 1.7;
+  }
+  .footer code { font-family: var(--mono); color: var(--orange); }
+</style>
+</head>
+<body>
+
+<h1>Vehicle CAN Signal Summary</h1>
+<div class="subtitle">
+  Sources: <code>signal_library.json</code> (CAN Log Splitter) · <code>Audi2025Q3TFT/Veepeak_signals.json</code> · <code>data/signal_library.json</code><br>
+  Addressing, outbound IDs, ECU response IDs, and per-signal details for VIN, ODO, Fuel %, Run Time, and RPM.
+  Observed sample values shown in parentheses.
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="dot" style="background:var(--green)"></div> 11-bit standard (≤ 0x7FF)</div>
+  <div class="legend-item"><div class="dot" style="background:var(--blue)"></div> 29-bit extended (&gt; 0x7FF)</div>
+  <div class="legend-item"><div class="dot" style="background:var(--orange)"></div> PID — J1979 Mode 01 / Mode 09</div>
+  <div class="legend-item"><div class="dot" style="background:var(--purple)"></div> DID — UDS / J1979-2 Mode 22</div>
+  <div class="legend-item"><div class="dot" style="background:var(--yellow)"></div> Note / exception</div>
+  <div class="legend-item"><div class="dot" style="background:var(--mute)"></div> Not captured in library</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ MAIN TABLE -->
+<div class="section-title">Captured Vehicles — Signal Library</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:170px">Vehicle</th>
+      <th>Addr</th>
+      <th>Broadcast (out)</th>
+      <th style="width:150px">Responding ECUs</th>
+      <th style="width:175px">VIN</th>
+      <th style="width:175px">Odometer</th>
+      <th style="width:175px">Fuel %</th>
+      <th style="width:175px">Run Time</th>
+      <th style="width:175px">RPM</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- ── Nissan Pathfinder ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Nissan Pathfinder</div>
+        <div class="vehicle-year">2025</div>
+        <div class="vin-prefix">5N1DR3CC5SC2…</div>
+      </td>
+      <td><span class="badge b-29">29-bit</span></td>
+      <td><span class="can-id ext">18DB33F1</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id ext">18DAF115</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF115</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF115</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">1,821.9 km · ×0.1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF115</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">89.8% · ×0.3922</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF115</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">33 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF115</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">1,137.5 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── Land Rover Range Rover Sport ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">LR Range Rover Sport</div>
+        <div class="vehicle-year">2025</div>
+        <div class="vin-prefix">SA424600…</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id">07E9</span>
+          <span class="can-id">07EE</span>
+          <span class="can-id">07EC</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8?</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="na">not captured</span>
+        </div>
+      </td>
+      <td>
+        <div class="na">not in library</div>
+        <div class="note">PID A6 not confirmed for LR</div>
+      </td>
+      <td>
+        <div class="na">not in library</div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E9</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">311 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07EE</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">709 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── Acura ADX ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Acura ADX</div>
+        <div class="vehicle-year">2025</div>
+        <div class="vin-prefix">3HDSA2H7XSM…</div>
+      </td>
+      <td><span class="badge b-29">29-bit</span></td>
+      <td><span class="can-id ext">18DB33F1</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id ext">18DAF110</span>
+          <span class="can-id ext">18DAF1EF</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> DID F802</span><br>
+          <span class="sig-method">UDS / J1979-2</span>
+          <span class="multi"> multi-frame</span><br>
+          <span class="sig-val">3HDSA2H7XSM705681</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">9,220 km · ×0.1</span>
+        </div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> DID F4A6</span>
+          <span class="sig-method"> J1979-2</span><br>
+          <span class="sig-val">9,220 km · ×0.1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">88.6% · ×0.3922</span>
+        </div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> DID F42F</span>
+          <span class="sig-method"> J1979-2</span><br>
+          <span class="sig-val">88.6% · ×0.3922</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">22 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF1EF</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">1,496 rpm · ×0.25</span>
+        </div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu ext">18DAF1EF</span>
+          <span class="sig-pid"> DID F40C</span>
+          <span class="sig-method"> J1979-2</span><br>
+          <span class="sig-val">1,496 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── Honda CR-V Hybrid ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Honda CR-V Hybrid</div>
+        <div class="vehicle-year">2025</div>
+        <div class="vin-prefix">7FARS6H86SE…</div>
+      </td>
+      <td><span class="badge b-29">29-bit</span></td>
+      <td><span class="can-id ext">18DB33F1</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id ext">18DAF107</span>
+          <span class="can-id ext">18DAF110</span>
+          <span class="can-id ext">18DAF1EF</span>
+          <span class="can-id ext">18DAF101</span>
+          <span class="can-id ext">18DAF102</span>
+          <span class="can-id ext">18DAF106</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF107</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span><br>
+          <span class="sig-val">7FARS6H86SE072439</span>
+        </div>
+        <div class="note" style="margin-top:4px">Only ECU 07 responded to VIN request</div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">49,646 km · ×0.1</span>
+        </div>
+        <div class="note" style="margin-top:4px">Only ECU 10 responds to PID A6</div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF110</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">91.4% · ×0.3922</span>
+        </div>
+        <div class="note" style="margin-top:4px">Only ECU 10 responds to PID 2F</div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF107 +5</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">425 s · ×1</span>
+        </div>
+        <div class="note" style="margin-top:4px">All 6 ECUs respond identically</div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF107 +5</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">1,200 rpm · ×0.25</span>
+        </div>
+        <div class="note" style="margin-top:4px">All 6 ECUs respond; J1979 only (no UDS)</div>
+      </td>
+    </tr>
+
+    <!-- ── Kia Seltos ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Kia Seltos</div>
+        <div class="vehicle-year">2026</div>
+        <div class="vin-prefix">KNDEU2AA1T7…</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id">07E8</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">5,893.9 km · ×0.1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">100% · ×0.3922</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">315 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">0 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── Toyota Camry Hybrid ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Toyota Camry</div>
+        <div class="vehicle-year">2025 · Hybrid</div>
+        <div class="vin-prefix">4T1DAACK9SU…</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id">07E8</span> ECM
+          <span class="can-id">07E9</span> TCM
+          <span class="can-id">07EA</span>
+          <span class="can-id">07ED</span>
+          <span class="can-id">07EE</span>
+          <span class="can-id">0708</span> HV Batt
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07EA?</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07EA</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">38,006.3 km · ×0.1</span>
+        </div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> DID 0103</span>
+          <span class="sig-method"> UDS</span><br>
+          <span class="sig-val">ODO in km (×0.621 for mi)</span>
+        </div>
+      </td>
+      <td>
+        <div class="na">PID 2F not supported</div>
+        <div class="note">Hybrid — use DID 1002 from 0708</div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu">0708</span>
+          <span class="sig-pid"> DID 1002</span>
+          <span class="sig-method"> UDS</span><br>
+          <span class="sig-val">11.83 gal · ×0.001</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07EE</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">38 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07EE</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">1,280 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── BMW 7 Series ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">BMW 7 Series</div>
+        <div class="vehicle-year">2024</div>
+        <div class="vin-prefix">WBA33EH01RCR…</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id">07E8</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">88,597.8 km · ×0.1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">100% · ×0.3922</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">33 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">977 rpm · ×0.25</span>
+        </div>
+      </td>
+    </tr>
+
+    <!-- ── Dodge Charger EV ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Dodge Charger EV</div>
+        <div class="vehicle-year">(Stellantis)</div>
+      </td>
+      <td><span class="badge b-29">29-bit</span></td>
+      <td>
+        <span class="na">physical only</span>
+        <div class="note">No functional broadcast — direct ECU addressing</div>
+      </td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id ext">18DAF144</span> HVB<br>
+          <span class="can-id ext">18DAF160</span> ODO/VIN
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF160</span>
+          <span class="sig-pid"> DID 22F1</span><br>
+          <span class="sig-method">UDS proprietary</span>
+          <span class="multi"> 3-frame ISO-TP</span><br>
+          <span class="sig-val">ASCII → VIN</span>
+        </div>
+        <div class="note" style="margin-top:4px">Request via <code>18DA60F1</code></div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu ext">18DAF160</span>
+          <span class="sig-pid"> DID 2000</span><br>
+          <span class="sig-method">UDS proprietary</span><br>
+          <span class="sig-val">value ÷ 16 ÷ 1.6 = km</span>
+        </div>
+        <div class="note" style="margin-top:4px">Request via <code>18DA60F1</code></div>
+      </td>
+      <td>
+        <span class="na">EV — no fuel tank</span>
+      </td>
+      <td>
+        <span class="na">not captured</span>
+      </td>
+      <td>
+        <span class="na">EV — no ICE RPM</span>
+      </td>
+    </tr>
+
+    <!-- ── Audi Q3 ── -->
+    <tr>
+      <td>
+        <div class="vehicle-name">Audi Q3</div>
+        <div class="vehicle-year">2025</div>
+        <div class="vin-prefix">VIN: ~3,115 km ODO</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td>
+        <div class="ecus-cell">
+          <span class="can-id">07E8</span>
+          <span class="can-id">07E9</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> M09 PID 02</span><br>
+          <span class="multi">multi-frame ISO-TP</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID A6</span><br>
+          <span class="sig-val">3,115–3,116 km · ×0.1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 2F</span><br>
+          <span class="sig-val">90.2% · ×0.3922</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 1F</span><br>
+          <span class="sig-val">20–573 s · ×1</span>
+        </div>
+      </td>
+      <td>
+        <div class="sig-block">
+          <span class="sig-ecu">07E8</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">0–3,089 rpm · ×0.25</span>
+        </div>
+        <div class="sig-block" style="margin-top:4px">
+          <span class="sig-ecu">07E9</span>
+          <span class="sig-pid"> PID 0C</span><br>
+          <span class="sig-val">also responds</span>
+        </div>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<!-- ═══════════════════════════════════════════ NOT YET CAPTURED -->
+<div class="section-title">Not Yet Captured — Add to Signal Library</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:170px">Vehicle</th>
+      <th>Expected Addr</th>
+      <th>Expected Broadcast</th>
+      <th>Expected ECU Range</th>
+      <th>VIN</th>
+      <th>ODO</th>
+      <th>Fuel %</th>
+      <th>Run Time</th>
+      <th>RPM</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <div class="vehicle-name">Genesis</div>
+        <div class="vehicle-year">(Hyundai group)</div>
+      </td>
+      <td><span class="badge b-11">11-bit</span></td>
+      <td><span class="can-id">07DF</span></td>
+      <td><span class="can-id">07E8</span></td>
+      <td><span class="na">not captured</span></td>
+      <td><span class="na">PID A6 expected</span></td>
+      <td><span class="na">PID 2F expected</span></td>
+      <td><span class="na">PID 1F expected</span></td>
+      <td><span class="na">PID 0C expected</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ═══════════════════════════════════════════ HVB SOC NOTE -->
+<div class="section-title">HV Battery SOC — Hybrid / EV Specific</div>
+<table>
+  <thead>
+    <tr>
+      <th>Vehicle</th>
+      <th>ECU</th>
+      <th>Method</th>
+      <th>PID / DID</th>
+      <th>Formula</th>
+      <th>Sample</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Toyota Camry Hybrid 2025</strong></td>
+      <td><span class="can-id">07EA</span></td>
+      <td><span class="sig-pid">PID 5B</span> J1979</td>
+      <td>PID 5B</td>
+      <td>A × 100/255</td>
+      <td>80.8%</td>
+      <td></td>
+    </tr>
+    <tr>
+      <td><strong>Toyota Camry Hybrid 2025</strong></td>
+      <td><span class="can-id">0708</span> HV Batt ECU</td>
+      <td><span class="sig-method">DID 2827</span> UDS</td>
+      <td>DID 2827</td>
+      <td>A (raw %)</td>
+      <td>—</td>
+      <td>Direct HV battery SOC, more accurate</td>
+    </tr>
+    <tr>
+      <td><strong>Dodge Charger EV</strong></td>
+      <td><span class="can-id ext">18DAF144</span></td>
+      <td><span class="sig-method">DID 7010</span> UDS proprietary</td>
+      <td>DID 7010</td>
+      <td>byte[3] ÷ 255 × 100</td>
+      <td>—</td>
+      <td>Request via <code>18DA44F1</code> · multi-frame ISO-TP</td>
+    </tr>
+    <tr>
+      <td><strong>All others in library</strong></td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+      <td class="na">HVB SOC not captured (ICE vehicles)</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="footer">
+  <strong>ISO-TP note:</strong> VIN (Mode 09 PID 02) is always a multi-frame response requiring ISO-TP reassembly.
+  Flow Control must be sent from the tester to the ECU's physical address.
+  For 11-bit: ECU responds on <code>0x7E8</code>, FC goes to <code>0x7E0</code> (−8).
+  For 29-bit: ECU responds on <code>0x18DAF115</code>, FC goes to <code>0x18DA15F1</code> (swap last two address bytes).<br><br>
+  <strong>Toyota Hybrid fuel:</strong> PID 2F (Fuel Tank Level Input) is not supported on Camry Hybrid.
+  Use UDS DID <code>1F46</code> (fuel level in L) or <code>1022</code> (alternate) from ECU <code>0x708</code> (HV Battery controller).
+  Request must be physical (to <code>0x700</code>, not broadcast).<br><br>
+  <strong>Stellantis note:</strong> Some Stellantis vehicles (Ram, Dodge, Jeep) use a proprietary CAN network in addition to OBD-II.
+  Witech / CAN-C bus may require specific physical addresses rather than functional broadcast.
+</div>
+
+</body>
+</html>

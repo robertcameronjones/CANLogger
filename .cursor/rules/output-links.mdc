@@ -1,0 +1,16 @@
+---
+description: Always show full clickable file paths when referencing generated files
+alwaysApply: true
+---
+
+# Output File Links
+
+When generating or referencing any file (reports, logs, HTML, scripts, etc.), always show the **full absolute path** as a clickable markdown link:
+
+```
+[filename.html](file:///Users/robertjones/Documents/PD/CAN/CANLogger/logs/filename.html)
+```
+
+- Never show a relative path alone
+- Always use `file://` URI so the user can click to open directly in the browser
+- Apply to: HTML reports, log files, any generated output

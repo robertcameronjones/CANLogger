@@ -1,0 +1,97 @@
+[
+  {
+    "_comment": "Honda / Acura — 29-bit, responds to J1979 and J1979-2. CR-V uses J1979; ADX uses J1979-2 only.",
+    "name": "Honda / Acura (NA)",
+    "vin_pattern": "7FA*|3HD*|19X*|2HG*|2HK*|5J6*|1HG*",
+    "addressing": "29bit",
+    "broadcast": "18DB33F1",
+    "protocol_hints": ["J1979", "J1979-2"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Nissan / Infiniti — 29-bit, J1979 standard PIDs.",
+    "name": "Nissan / Infiniti (NA)",
+    "vin_pattern": "5N1*|5N3*|JN1*|JN8*|1N4*|1N6*",
+    "addressing": "29bit",
+    "broadcast": "18DB33F1",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Stellantis — 29-bit, physical addressing only (no functional broadcast). All proprietary UDS DIDs.",
+    "name": "Stellantis (Dodge / Chrysler / Ram / Jeep)",
+    "vin_pattern": "1C4*|1C6*|1C3*|1B3*|2C4*|3C4*",
+    "addressing": "29bit",
+    "broadcast": null,
+    "protocol_hints": ["proprietary"],
+    "ecus": {
+      "hvb":     "18DA44F1",
+      "odo_vin": "18DA60F1"
+    }
+  },
+  {
+    "_comment": "Toyota / Lexus — 11-bit, J1979. HV Battery ECU 0708 sits outside 07Ex range.",
+    "name": "Toyota / Lexus (NA + Japan)",
+    "vin_pattern": "4T1*|4T3*|2T1*|2T3*|JTD*|JTE*|JTJ*|JTK*|JTL*|JTM*|JTN*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {
+      "hv_battery": "0708"
+    }
+  },
+  {
+    "_comment": "Kia — 11-bit, J1979 standard.",
+    "name": "Kia (Korea / NA)",
+    "vin_pattern": "KND*|KNA*|5XX*|KNAL*|KNAG*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Genesis (Hyundai group) — 11-bit, J1979.",
+    "name": "Genesis",
+    "vin_pattern": "KMT*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Hyundai — 11-bit, J1979.",
+    "name": "Hyundai (NA + Korea)",
+    "vin_pattern": "KMH*|5NM*|5NPE*|5NPS*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "BMW / MINI — 11-bit, J1979.",
+    "name": "BMW / MINI",
+    "vin_pattern": "WBA*|WBS*|WBY*|WMW*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Jaguar Land Rover — 11-bit, J1979. Fuel and ODO not always standard.",
+    "name": "Jaguar Land Rover",
+    "vin_pattern": "SAL*|SA4*|SAJ*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  },
+  {
+    "_comment": "Audi / VW / Porsche (VAG) — 11-bit, J1979.",
+    "name": "Audi / VW / Porsche (VAG)",
+    "vin_pattern": "WAU*|WA1*|TRU*|WVW*|1VW*|2VW*|WP0*|WP1*",
+    "addressing": "11bit",
+    "broadcast": "07DF",
+    "protocol_hints": ["J1979"],
+    "ecus": {}
+  }
+]

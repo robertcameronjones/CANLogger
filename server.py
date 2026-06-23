@@ -17,8 +17,20 @@ ISO-TP (ISO 15765-2) reassembly is handled inline before decoding:
 
 Usage:
     ./start.sh        ← recommended
-    open http://localhost:8000
+    open http://localhost:8001
 """
+
+import sys
+
+class _StderrFilter:
+    """Suppress noisy PCAN driver messages printed directly to stderr."""
+    _SUPPRESS = ("Bus error:", "error counter")
+    def write(self, s):
+        if not any(p in s for p in self._SUPPRESS):
+            sys.__stderr__.write(s)
+    def flush(self): sys.__stderr__.flush()
+
+sys.stderr = _StderrFilter()
 
 import asyncio
 import contextlib
@@ -34,6 +46,8 @@ from can import Bus, BusState, Logger, Notifier
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+
+import scanner
 
 # ──────────────────────────────────────────────────────────────────────────────
 # J1979 (OBD-II Mode 01) generic formula table — fallback when no library entry
@@ -73,8 +87,8 @@ J1979_2_DIDS: dict[str, dict] = {
     "F40F": {"name": "Intake Air Temp (J1979-2)",   "nbytes": 1, "mul": 1,       "off": -40, "unit": "°C"},
     "F411": {"name": "Throttle Pos (J1979-2)",      "nbytes": 1, "mul": 100/255, "off": 0,   "unit": "%"},
     "F41F": {"name": "Engine Run Time (J1979-2)",   "nbytes": 2, "mul": 1,       "off": 0,   "unit": "s"},
-    "F42F": {"name": "Fuel Level % (J1979-2)",      "nbytes": 1, "mul": 100/255, "off": 0,   "unit": "%"},
-    "F4A6": {"name": "Odometer (J1979-2)",          "nbytes": 4, "mul": 0.1,     "off": 0,   "unit": "km"},
+    "F42F": {"name": "Fuel Level (J1979-2)",        "nbytes": 1, "mul": 100/255, "off": 0,   "unit": "%"},
+    "F4A6": {"name": "Odometer (J1979-2)",          "nbytes": 4, "mul": 0.098,   "off": 0,   "unit": "km"},
     "F805": {"name": "Coolant Temp (J1979-2)",      "nbytes": 1, "mul": 1,       "off": -40, "unit": "°C"},
 }
 
@@ -203,10 +217,14 @@ def load_signal_library():
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _bytes_to_int(data: list[int], nbytes: int) -> int | None:
-    if len(data) < nbytes or nbytes == 0:
+    """Convert up to nbytes of data to an integer.
+    Uses however many bytes are actually available — ISO-TP length
+    already bounds the payload so we trust what arrives."""
+    n = min(nbytes, len(data)) if nbytes > 0 else len(data)
+    if n == 0:
         return None
     val = 0
-    for i in range(nbytes):
+    for i in range(n):
         val = (val << 8) | data[i]
     return val
 
@@ -262,10 +280,17 @@ async def lifespan(app: FastAPI):
     global _loop
     _loop = asyncio.get_event_loop()
     load_signal_library()
+    scanner.init(
+        _state, _signals, _signals_lock,
+        _can_ids, _can_ids_lock,
+        _lib_by_canid, _broadcast,
+    )
     yield
+    # ── Ordered shutdown — release USB cleanly ────────────────────────────────
+    scanner.stop()
+    await asyncio.sleep(0.2)          # let scanner task cancel
     if _state["running"]:
-        _state["notifier"].stop()
-        _state["bus"].shutdown()
+        _teardown_bus()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -399,7 +424,7 @@ class _ISOTPReassembler:
         tx_id = self._fc_tx_id(src_int, is_ext)
         if tx_id is None:
             return
-        fc = bytes([0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        fc = bytes([0x30, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00])
         try:
             bus.send(can.Message(arbitration_id=tx_id, data=fc,
                                  is_extended_id=is_ext, is_fd=False))
@@ -451,7 +476,10 @@ class _CANListener(can.Listener):
         if msg.is_fd:           flags.append("FD")
         if msg.is_error_frame:  flags.append("ERR")
 
-        elapsed = (msg.timestamp - _state["start_time"]) if _state["start_time"] else 0.0
+        if _state.get("t0_hw") is None:
+            _state["t0_hw"]         = msg.timestamp
+            _state["first_msg_wall"] = datetime.now()
+        elapsed = msg.timestamp - _state["t0_hw"]
 
         # ── raw frame broadcast ──────────────────────────────────────────────
         _broadcast({
@@ -583,7 +611,20 @@ class _CANListener(can.Listener):
                 key = (f"lib_{id_str}_{sig['response_byte']:02X}_"
                        f"{''.join(f'{b:02X}' for b in pid_bytes)}")
 
-                if sig["is_string"]:
+                if sig.get("value_map") is not None:
+                    bi  = sig.get("byte_index") or 0
+                    bval = value_data[bi] if bi < len(value_data) else None
+                    if bval is not None:
+                        s = sig["value_map"].get(f"{bval:02X}".upper(),
+                                                  f"0x{bval:02X}")
+                        self._emit_signal(key, sig["name"], "", s,
+                                          None, None, id_str, track_states=True)
+                elif sig.get("raw_hex"):
+                    s = " ".join(f"{b:02X}" for b in value_data) if value_data else ""
+                    if s:
+                        self._emit_signal(key, sig["name"], "", s,
+                                          None, None, id_str)
+                elif sig["is_string"]:
                     s = _decode_string(value_data)
                     if s:
                         self._emit_signal(key, sig["name"], "", s,
@@ -617,8 +658,13 @@ class _CANListener(can.Listener):
                     "can_id": can_id})
 
     def _emit_signal(self, key: str, name: str, unit: str,
-                     value, min_v, max_v, can_id: str):
+                     value, min_v, max_v, can_id: str, track_states: bool = False):
         with _signals_lock:
+            prev = _signals.get(key, {})
+            if track_states and isinstance(value, str):
+                # min = first seen, max = previous value before last change
+                min_v = prev.get("min") if prev.get("min") is not None else value
+                max_v = prev.get("value") if prev.get("value") != value else prev.get("max")
             _signals[key] = {"name": name, "unit": unit, "can_id": can_id,
                              "value": value, "min": min_v, "max": max_v}
         _broadcast({"type": "signal", "pid": key,
@@ -678,11 +724,13 @@ async def start(config: dict):
         _signals.clear()
     _isotp.clear()
 
-    listeners = [_CANListener(), Logger(str(log_path))]
-    notifier  = Notifier(bus, listeners)
+    can_logger = Logger(str(log_path))
+    listeners  = [_CANListener(), can_logger]
+    notifier   = Notifier(bus, listeners)
 
     _state.update(running=True, bus=bus, notifier=notifier, log_path=log_path,
-                  msg_count=0, start_time=time.time(),
+                  can_logger=can_logger,
+                  msg_count=0, start_time=time.time(), t0_hw=None, first_msg_wall=None,
                   channel=channel, bitrate=bitrate, passive=passive, fd=fd, fmt=fmt)
 
     _broadcast({"type": "started", "log": log_path.name,
@@ -690,32 +738,64 @@ async def start(config: dict):
                 "passive": passive, "fd": fd})
     return JSONResponse({"ok": True, "log": str(log_path)})
 
+def _teardown_bus():
+    """Stop notifier, reset CAN error state, shut down bus, clear state."""
+    try:
+        if _state.get("notifier"):
+            _state["notifier"].stop()
+        if _state.get("bus"):
+            try: _state["bus"].reset()   # clear error-warning before USB release
+            except Exception: pass
+            _state["bus"].shutdown()
+    except Exception:
+        pass
+    log_path       = _state.get("log_path")
+    msg_count      = _state.get("msg_count", 0)
+    start_wall     = _state.get("start_time")
+    first_msg_wall = _state.get("first_msg_wall")
+    _state.update(running=False, bus=None, notifier=None, log_path=None,
+                  can_logger=None, msg_count=0, start_time=None, t0_hw=None,
+                  first_msg_wall=None)
+
+    # Prepend wall-clock timing comments at the top of the log file
+    if log_path and log_path.exists():
+        try:
+            start_str = (datetime.fromtimestamp(start_wall).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                         if start_wall else "unknown")
+            first_str = (first_msg_wall.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                         if first_msg_wall else "(no frames received)")
+            header = (f"; Logging started (wall clock): {start_str}\n"
+                      f"; First CAN frame (wall clock):  {first_str}\n"
+                      f";\n")
+            with open(log_path, "r") as f:
+                original = f.read()
+            with open(log_path, "w") as f:
+                f.write(header + original)
+        except Exception:
+            pass
+
+    return log_path, msg_count
+
+
 @app.post("/stop")
 async def stop():
     if not _state["running"]:
         return JSONResponse({"ok": False, "error": "Not running"})
-
-    _state["notifier"].stop()
-    _state["bus"].shutdown()
-    log_path  = _state["log_path"]
-    msg_count = _state["msg_count"]
-    size_kb   = log_path.stat().st_size / 1024 if log_path and log_path.exists() else 0
-    _state.update(running=False, bus=None, notifier=None, log_path=None)
-
+    scanner.stop()
+    await asyncio.sleep(0.2)
+    log_path, msg_count = _teardown_bus()
+    size_kb = log_path.stat().st_size / 1024 if log_path and log_path.exists() else 0
     _broadcast({"type": "stopped", "log": log_path.name if log_path else "—",
                 "msgs": msg_count, "size_kb": round(size_kb, 1)})
     return JSONResponse({"ok": True, "log": str(log_path),
                          "msgs": msg_count, "size_kb": round(size_kb, 1)})
 
+
 @app.post("/kill")
 async def kill():
-    for key in ("notifier", "bus"):
-        obj = _state.get(key)
-        if obj:
-            try: obj.stop() if key == "notifier" else obj.shutdown()
-            except Exception: pass
-    _state.update(running=False, bus=None, notifier=None, log_path=None,
-                  msg_count=0, start_time=None)
+    scanner.stop()
+    await asyncio.sleep(0.1)
+    _teardown_bus()
     _broadcast({"type": "killed"})
     return JSONResponse({"ok": True})
 
@@ -739,6 +819,39 @@ async def library():
         "j1979_pids":   list(J1979_PIDS.keys()),
         "j1979_2_dids": list(J1979_2_DIDS.keys()),
     })
+
+# ── Active scan endpoints ─────────────────────────────────────────────────────
+
+@app.post("/scan/start")
+async def scan_start():
+    if not _state["running"]:
+        return JSONResponse({"ok": False,
+                             "error": "CAN bus not started — start logging first"})
+    if _state.get("passive"):
+        return JSONResponse({"ok": False,
+                             "error": "Bus is in passive mode — restart without listen-only"})
+    ok = scanner.start(_state["bus"])
+    if not ok:
+        return JSONResponse({"ok": False, "error": "Scan already running"})
+    return JSONResponse({"ok": True})
+
+@app.post("/scan/stop")
+async def scan_stop():
+    scanner.stop()
+    return JSONResponse({"ok": True})
+
+@app.post("/scan/sweep")
+async def scan_sweep():
+    if not _state["running"]:
+        return JSONResponse({"ok": False, "error": "Start logging first"})
+    ok = scanner.start_sweep(_state["bus"])
+    if not ok:
+        return JSONResponse({"ok": False, "error": "Scan already running"})
+    return JSONResponse({"ok": True})
+
+@app.get("/scan/status")
+async def scan_status():
+    return JSONResponse(scanner.get_status())
 
 # ──────────────────────────────────────────────────────────────────────────────
 # WebSocket
@@ -776,6 +889,6 @@ async def websocket_endpoint(ws: WebSocket):
 if __name__ == "__main__":
     import webbrowser
     print("\n  CAN Logger Web UI")
-    print("  Open: http://localhost:8000\n")
-    threading.Timer(1.2, lambda: webbrowser.open("http://localhost:8000")).start()
-    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=False)
+    print("  Open: http://localhost:8001\n")
+    threading.Timer(1.2, lambda: webbrowser.open("http://localhost:8001")).start()
+    uvicorn.run("server:app", host="0.0.0.0", port=8001, reload=False)

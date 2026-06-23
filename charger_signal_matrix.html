@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Guidepoint Engineering Report — Charger EV CAN Signal Matrix</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background: #fff;
+    color: #1a1a1a;
+    padding: 40px 48px 60px;
+  }
+
+  /* ── Header ── */
+  .report-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 3px solid #d32f2f;
+    padding-bottom: 18px;
+    margin-bottom: 32px;
+  }
+
+  .logo-block {
+    display: flex;
+    flex-direction: column;
+  }
+  .logo-wordmark {
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: #d32f2f;
+    line-height: 1;
+  }
+  .logo-sub {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #555;
+    margin-top: 4px;
+  }
+
+  .report-meta {
+    text-align: right;
+    font-size: 12px;
+    color: #555;
+    line-height: 1.7;
+  }
+  .report-meta strong { color: #1a1a1a; }
+
+  /* ── Section title ── */
+  .section-title {
+    font-size: 19px;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin-bottom: 6px;
+  }
+  .section-sub {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 20px;
+  }
+
+  /* ── Table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    margin-bottom: 40px;
+  }
+
+  thead tr {
+    background: #1a1a1a;
+    color: #fff;
+  }
+  thead th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  thead th.center { text-align: center; }
+
+  tbody tr:nth-child(even) { background: #f7f7f7; }
+  tbody tr:hover           { background: #fdeaea; }
+
+  tbody td {
+    padding: 10px 12px;
+    vertical-align: top;
+    border-bottom: 1px solid #e0e0e0;
+  }
+  tbody td.center { text-align: center; }
+  tbody td.mono   { font-family: 'Courier New', monospace; font-size: 12px; }
+  tbody td.formula { font-family: 'Courier New', monospace; font-size: 11.5px; color: #1565c0; }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .badge-y   { background: #e8f5e9; color: #2e7d32; }
+  .badge-n   { background: #f5f5f5; color: #666; }
+  .badge-ready { background: #e8f5e9; color: #2e7d32; }
+  .badge-nr    { background: #fce4e4; color: #c62828; }
+
+  .note-cell { font-size: 11px; color: #555; margin-top: 4px; }
+
+  /* ── FC block ── */
+  .fc-bytes {
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+    background: #f0f0f0;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-block;
+  }
+
+  /* ── Raw location ── */
+  .byte-ref {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    background: #e3f2fd;
+    padding: 2px 6px;
+    border-radius: 3px;
+    display: inline-block;
+    color: #0d47a1;
+  }
+
+  /* ── Footer ── */
+  .footer {
+    border-top: 1px solid #e0e0e0;
+    padding-top: 14px;
+    font-size: 11px;
+    color: #999;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ── Addressing note box ── */
+  .info-box {
+    background: #fff8e1;
+    border-left: 4px solid #f9a825;
+    padding: 12px 16px;
+    margin-bottom: 28px;
+    font-size: 12.5px;
+    line-height: 1.7;
+  }
+  .info-box strong { color: #1a1a1a; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ── -->
+<div class="report-header">
+  <div class="logo-block">
+    <div class="logo-wordmark">GUIDEPOINT</div>
+    <div class="logo-sub">Engineering Report</div>
+  </div>
+  <div class="report-meta">
+    <strong>Document:</strong> Charger EV CAN Signal Matrix<br>
+    <strong>Vehicle:</strong> Dodge Charger EV (Stellantis)<br>
+    <strong>Protocol:</strong> UDS / ISO 15765-2 (ISO-TP)<br>
+    <strong>Network:</strong> 29-bit Extended CAN, Physical Addressing<br>
+    <strong>Date:</strong> <script>document.write(new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}))</script>
+  </div>
+</div>
+
+<!-- ── Addressing note ── -->
+<div class="info-box">
+  <strong>Addressing Scheme:</strong> Stellantis 29-bit physical addressing. Tester node = <code>0xF1</code>.
+  Request format: <code>18DA{ECU}F1</code> → Response format: <code>18DAF1{ECU}</code>.
+  No functional broadcast address responds on this vehicle — all requests must be physical (point-to-point).
+  Flow Control (FC) frames <code>30 00 01 00 00 00 00 00</code> are sent automatically by the logger upon receipt of any First Frame.
+</div>
+
+<!-- ── Signal Matrix ── -->
+<div class="section-title">CAN Signal Matrix</div>
+<div class="section-sub">All signals use UDS Service 0x22 (ReadDataByIdentifier). Responses use service 0x62.</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Signal</th>
+      <th>Request CAN ID</th>
+      <th>DID</th>
+      <th>Response CAN ID</th>
+      <th class="center">Multi-<br>frame</th>
+      <th>Flow Control</th>
+      <th>Raw Value Location</th>
+      <th>Raw → Physical Conversion</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- VIN -->
+    <tr>
+      <td><strong>VIN</strong></td>
+      <td class="mono">18DA60F1</td>
+      <td class="mono">F1B0<br><span class="note-cell">alt: F190</span></td>
+      <td class="mono">18DAF160</td>
+      <td class="center"><span class="badge badge-y">Y</span></td>
+      <td><span class="fc-bytes">30 00 01 00 00 00 00 00</span></td>
+      <td>
+        <span class="byte-ref">FF + 2× CF</span>
+        <div class="note-cell">17-byte ASCII string.<br>Starts at payload byte 3<br>(after 62 F1 B0 header).</div>
+      </td>
+      <td class="formula">
+        17 bytes ASCII → VIN string<br>
+        <span class="note-cell">Example: 2C3CDBCK4SR564418</span>
+      </td>
+    </tr>
+
+    <!-- HVB SOC -->
+    <tr>
+      <td><strong>HVB State of Charge</strong></td>
+      <td class="mono">18DA44F1</td>
+      <td class="mono">7010</td>
+      <td class="mono">18DAF144</td>
+      <td class="center"><span class="badge badge-y">Y</span></td>
+      <td><span class="fc-bytes">30 00 01 00 00 00 00 00</span></td>
+      <td>
+        <span class="byte-ref">Payload byte [3]</span>
+        <div class="note-cell">3rd data byte after<br>UDS header (62 70 10).<br>All bytes identical in<br>observed data (E9 E9…).</div>
+      </td>
+      <td class="formula">
+        byte[3] / 255 × 100 = %<br>
+        <span class="note-cell">E.g. 0xE9 = 233 → 91.4 %</span>
+      </td>
+    </tr>
+
+    <!-- Odometer -->
+    <tr>
+      <td><strong>Odometer</strong></td>
+      <td class="mono">18DA60F1</td>
+      <td class="mono">2000</td>
+      <td class="mono">18DAF160</td>
+      <td class="center"><span class="badge badge-n">N</span></td>
+      <td>None</td>
+      <td>
+        <span class="byte-ref">Bytes [3–5]</span>
+        <div class="note-cell">3-byte big-endian integer<br>after UDS header (62 20 00).<br>Single frame (0x06 length).</div>
+      </td>
+      <td class="formula">
+        raw / 16 × 0.621371 = miles<br>
+        <span class="note-cell">E.g. 0x041100 = 266,496<br>→ 266,496 / 16 × 0.621371<br>= 10,349 mi</span>
+      </td>
+    </tr>
+
+    <!-- IGN / Vehicle Ready -->
+    <tr>
+      <td><strong>Vehicle Ready<br>(IGN State)</strong></td>
+      <td class="mono">18DA40F1</td>
+      <td class="mono">5802</td>
+      <td class="mono">18DAF140</td>
+      <td class="center"><span class="badge badge-y">Y</span></td>
+      <td><span class="fc-bytes">30 00 01 00 00 00 00 00</span><br><span class="note-cell">Sent automatically<br>by logger</span></td>
+      <td>
+        <span class="byte-ref">CF2[5]</span>
+        <div class="note-cell">2nd consecutive frame,<br>6th data byte (0-indexed).<br>Payload byte index 17<br>of 37-byte response.</div>
+      </td>
+      <td class="formula">
+        0x0C → <span class="badge badge-ready">READY</span><br>
+        0x01 → <span class="badge badge-nr">NOT READY</span><br>
+        <span class="note-cell">Additional state flags active<br>in READY: CF3[7]=2C,<br>CF4[2]=06, CF4[5]=08,<br>CF5[1]=60</span>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<!-- ── Frame Structure Reference ── -->
+<div class="section-title">ISO-TP Frame Structure Reference</div>
+<div class="section-sub">How multi-frame responses are assembled from raw CAN frames.</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Frame Type</th>
+      <th>Byte 0</th>
+      <th>Bytes 1–7</th>
+      <th>Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Single Frame (SF)</strong></td>
+      <td class="mono">0N</td>
+      <td class="mono">payload (N bytes)</td>
+      <td>N = payload length. Used by ODO response.</td>
+    </tr>
+    <tr>
+      <td><strong>First Frame (FF)</strong></td>
+      <td class="mono">1H LL</td>
+      <td class="mono">first 6 payload bytes</td>
+      <td>H/LL = total length (12-bit). Triggers Flow Control.</td>
+    </tr>
+    <tr>
+      <td><strong>Consecutive Frame (CF)</strong></td>
+      <td class="mono">2N</td>
+      <td class="mono">next 7 payload bytes</td>
+      <td>N = sequence number 1–F, wraps. CF1=21, CF2=22…</td>
+    </tr>
+    <tr>
+      <td><strong>Flow Control (FC)</strong></td>
+      <td class="mono">30</td>
+      <td class="mono">00 01 00 00 00 00 00</td>
+      <td>Continue To Send. BS=0 (no block limit), STmin=1ms.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ── IGN State Detail ── -->
+<div class="section-title">Vehicle Ready — Full Payload Map (DID 5802)</div>
+<div class="section-sub">37-byte response from 18DAF140. Observed state transitions during IGN cycle testing.</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Frame</th>
+      <th>Raw Bytes (data after seq byte)</th>
+      <th>Key Byte(s)</th>
+      <th>IGN OFF value</th>
+      <th>IGN READY value</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="mono">FF</td>
+      <td class="mono">62 58 02 00 00 00</td>
+      <td>—</td>
+      <td>static</td>
+      <td>static</td>
+      <td>UDS ack + DID header</td>
+    </tr>
+    <tr>
+      <td class="mono">CF1 (21)</td>
+      <td class="mono">00 00 0C 00 00 00 7<em>x</em></td>
+      <td class="mono">byte[6]</td>
+      <td class="mono">78/79</td>
+      <td class="mono">78/79</td>
+      <td>Rolling counter (±1)</td>
+    </tr>
+    <tr>
+      <td class="mono"><strong>CF2 (22)</strong></td>
+      <td class="mono">C8 01 6x 00 <strong>0C</strong> 00 2D</td>
+      <td class="mono"><strong>byte[4] = CF2[5]</strong></td>
+      <td class="mono"><strong>01</strong></td>
+      <td class="mono"><strong>0C</strong></td>
+      <td><strong>Primary IGN/READY flag</strong></td>
+    </tr>
+    <tr>
+      <td class="mono">CF3 (23)</td>
+      <td class="mono">18 00 00 C6 00 00 <strong>2C</strong></td>
+      <td class="mono">byte[6]</td>
+      <td class="mono">00</td>
+      <td class="mono"><strong>2C</strong></td>
+      <td>READY auxiliary flag</td>
+    </tr>
+    <tr>
+      <td class="mono">CF4 (24)</td>
+      <td class="mono">03 <strong>06</strong> 00 00 <strong>08</strong> C8 <strong>06</strong></td>
+      <td class="mono">bytes[1,4,6]</td>
+      <td class="mono">00, 02, 00</td>
+      <td class="mono"><strong>06, 08, 06</strong></td>
+      <td>READY auxiliary flags</td>
+    </tr>
+    <tr>
+      <td class="mono">CF5 (25)</td>
+      <td class="mono"><strong>60</strong> 00 00</td>
+      <td class="mono">byte[0]</td>
+      <td class="mono">00</td>
+      <td class="mono"><strong>60</strong></td>
+      <td>READY auxiliary flag</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ── Footer ── -->
+<div class="footer">
+  <span>Guidepoint Systems — Engineering &amp; Product Development</span>
+  <span>Confidential — Internal Use Only</span>
+  <span id="gen-date"></span>
+</div>
+<script>
+  document.getElementById('gen-date').textContent =
+    'Generated: ' + new Date().toLocaleString();
+</script>
+
+</body>
+</html>
