@@ -426,8 +426,6 @@ def build_html(meta, frames, pairs, stats, test_meta=None):
           <td class="c">{max_str}</td>
         </tr>"""
 
-    tl_json  = json.dumps(tl_data)
-
     # Overlay events (vertical markers) from the test meta.
     # Events are positioned in axis time: "min" = minutes from axis origin
     # (test start); legacy "t_ms" = ms from the first CAN frame.
@@ -443,7 +441,6 @@ def build_html(meta, frames, pairs, stats, test_meta=None):
     # Auto marker delineating where real CAN data ends (logging continues after).
     last_frame_pos = total_ms + frame_offset_ms
     ev_data.append({"t": last_frame_pos, "lbl": "Last CAN frame", "c": "#8895aa"})
-    ev_json = json.dumps(ev_data)
 
     # Event legend (numbered, with wall-clock time) — keeps the canvas uncluttered.
     def _ev_wall(pos):
@@ -467,10 +464,41 @@ def build_html(meta, frames, pairs, stats, test_meta=None):
     else:
         test_total_ms = (test_meta or {}).get("total_time_min", 0) * 60000
     domain_ms = max(last_frame_pos, event_max, test_total_ms)
-    domain_min = min(0.0, frame_offset_ms)   # allow a little room if frames precede origin
 
     # Shaded "no CAN" region (last frame → end of test window)
     nocan_start_ms = last_frame_pos
+
+    # Elapsed-from-origin (test start) for the summary card, before any view shift
+    last_frame_elapsed_min = last_frame_pos / 60000
+
+    # ── Optional view clip window (wall clock) ──────────────────────────────────
+    # "view_start_wall"/"view_end_wall" in the meta clip the visible x-axis to a
+    # specific wall-clock window. All positions are shifted so the window starts
+    # at 0 and AXIS_ORIGIN is moved to the window start (keeps fmtWall correct).
+    view_start_dt = _parse_wall(tm.get("view_start_wall"))
+    view_end_dt   = _parse_wall(tm.get("view_end_wall"))
+    view0_ms = ((view_start_dt - axis_origin).total_seconds() * 1000
+                if (axis_origin is not None and view_start_dt is not None) else 0.0)
+    if axis_origin is not None and view_end_dt is not None:
+        view_end_ms = (view_end_dt - axis_origin).total_seconds() * 1000
+    else:
+        view_end_ms = domain_ms + view0_ms
+
+    if view0_ms != 0.0:
+        for d in tl_data:
+            d["t"] -= view0_ms
+            if d["r"] is not None:
+                d["r"] -= view0_ms
+        for e in ev_data:
+            e["t"] -= view0_ms
+        last_frame_pos -= view0_ms
+        nocan_start_ms -= view0_ms
+        axis_origin_epoch += view0_ms
+    domain_ms = view_end_ms - view0_ms
+
+    # (Re)serialize after any view shift
+    tl_json = json.dumps(tl_data)
+    ev_json = json.dumps(ev_data)
 
     n_lanes  = len(pid_keys)
     lane_labels = json.dumps([stats[k]["label"] for k in pid_keys])
@@ -484,7 +512,7 @@ def build_html(meta, frames, pairs, stats, test_meta=None):
 
     # Wall-clock strings for the summary cards
     last_frame_wall = (first_frame_wall + timedelta(milliseconds=total_ms)) if first_frame_wall else None
-    last_frame_card = (f"{last_frame_wall.strftime('%H:%M:%S')} · +{last_frame_pos/60000:.1f}m"
+    last_frame_card = (f"{last_frame_wall.strftime('%H:%M:%S')} · +{last_frame_elapsed_min:.1f}m"
                        if last_frame_wall else dur_str)
     if test_start_dt and test_end_dt:
         test_window_card = f"{test_start_dt.strftime('%H:%M')} → {test_end_dt.strftime('%H:%M')}"

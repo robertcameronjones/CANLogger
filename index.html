@@ -986,6 +986,8 @@ btnStart.addEventListener('click', async () => {
   const channel = selChannel.value;
   if (!channel) { toast('Select a channel first', 'red'); return; }
 
+  clearScreen();   // drop carryover from the previous session (screen only)
+
   const r = await fetch('/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1003,6 +1005,7 @@ btnStart.addEventListener('click', async () => {
 });
 
 btnStop.addEventListener('click', async () => {
+  clearScreen();   // drop carryover from the previous session (screen only)
   await fetch('/stop', { method: 'POST' });
 });
 
@@ -1176,6 +1179,19 @@ function clearAnalysisPanes() {
   sigTable.innerHTML = '';
   Object.keys(sigRows).forEach(k => delete sigRows[k]);
   sigCount.textContent = '0';
+}
+
+// Wipe all on-screen panes (live log + analysis) — does NOT touch the log file
+function clearScreen() {
+  msgTable.innerHTML = '';
+  rows = [];
+  msgCount = 0;
+  errorCount = 0;
+  rateWindow.length = 0;
+  statMsgs.textContent   = '0';
+  statRate.textContent   = '0.0';
+  statErrors.textContent = '0';
+  clearAnalysisPanes();
 }
 
 function setControlsEnabled(enabled) {
