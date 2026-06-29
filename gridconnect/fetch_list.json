@@ -1,0 +1,125 @@
+[
+  {
+    "name": "VIN",
+    "key": "vin",
+    "enabled": true,
+    "one_shot": true,
+    "layers": [
+      {
+        "protocol": "prop",
+        "name": "VIN (18DA60F1 DID F1B0)",
+        "request_id": "18DA60F1",
+        "is_ext": true,
+        "service": "22",
+        "did": "F1B0",
+        "response_id": "18DAF160",
+        "nbytes": 17,
+        "is_string": true,
+        "mul": 1.0,
+        "off": 0,
+        "unit": ""
+      },
+      {
+        "protocol": "prop",
+        "name": "VIN (18DA60F1 DID F190)",
+        "request_id": "18DA60F1",
+        "is_ext": true,
+        "service": "22",
+        "did": "F190",
+        "response_id": "18DAF160",
+        "nbytes": 17,
+        "is_string": true,
+        "mul": 1.0,
+        "off": 0,
+        "unit": ""
+      }
+    ]
+  },
+
+  {
+    "name": "Vehicle Ready",
+    "key": "veh_ready",
+    "enabled": true,
+    "one_shot": false,
+    "layers": [
+      {
+        "protocol": "prop",
+        "name": "Vehicle Ready (18DA40F1 DID 5802)",
+        "request_id": "18DA40F1",
+        "is_ext": true,
+        "service": "22",
+        "did": "5802",
+        "response_id": "18DAF140",
+        "byte_index": 14,
+        "value_map": { "0C": "READY", "01": "NOT READY" },
+        "nbytes": 1,
+        "mul": 1.0,
+        "off": 0,
+        "unit": ""
+      }
+    ]
+  },
+
+  {
+    "name": "HVB State of Charge",
+    "key": "hvb_soc",
+    "enabled": true,
+    "one_shot": false,
+    "layers": [
+      {
+        "protocol": "prop",
+        "name": "HVB SoC (18DA44F1 DID 7010)",
+        "request_id": "18DA44F1",
+        "is_ext": true,
+        "service": "22",
+        "did": "7010",
+        "response_id": "18DAF144",
+        "nbytes": 1,
+        "mul": 0.3922,
+        "off": 0,
+        "unit": "%"
+      }
+    ]
+  },
+
+  {
+    "name": "Odometer",
+    "key": "odometer",
+    "enabled": true,
+    "one_shot": false,
+    "layers": [
+      {
+        "protocol": "prop",
+        "name": "ODO (18DA60F1 DID 2000)",
+        "request_id": "18DA60F1",
+        "is_ext": true,
+        "service": "22",
+        "did": "2000",
+        "response_id": "18DAF160",
+        "nbytes": 4,
+        "mul": 0.038837,
+        "off": 0,
+        "unit": "mi"
+      },
+      {
+        "protocol": "J1979-2",
+        "name": "ODO J1979-2 DID F4A6",
+        "did": "F4A6"
+      }
+    ]
+  },
+
+  {
+    "name": "Fuel Level",
+    "key": "fuel",
+    "enabled": true,
+    "one_shot": false,
+    "layers": [
+      {
+        "protocol": "J1979-2",
+        "name": "Fuel J1979-2 DID F42F",
+        "did": "F42F"
+      }
+    ]
+  }
+]

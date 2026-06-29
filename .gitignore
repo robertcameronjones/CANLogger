@@ -1,4 +1,5 @@
 venv/
+PCBUSB/
 __pycache__/
 *.pyc
 *.pyo
