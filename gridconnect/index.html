@@ -1112,7 +1112,8 @@ function onStarted(msg) {
   msgCount = 0;
   resetErrReg();
 
-  // Clear stale CAN ID / signal tables
+  // Fresh session — clear the log plus the CAN ID / signal tables
+  clearMsgLog();
   clearAnalysisPanes();
 
   dot.className = 'online';
@@ -1135,7 +1136,6 @@ function onStarted(msg) {
 
 function onStopped(msg) {
   scan();
-  document.getElementById('inp-note').value = '';
   running = false;
 
   // Stop any active scan
@@ -1158,7 +1158,8 @@ function onStopped(msg) {
   if (msg.msgs) {
     toast(`Stopped. ${msg.msgs.toLocaleString()} msgs → ${msg.log} (${msg.size_kb} KB)`, 'green');
   }
-  resetErrReg();
+  // NOTE: stop intentionally leaves the log, CAN ID, and signal tables intact
+  // so the last capture stays on screen for review.
 }
 
 // ── Adapter error register (canable-fw 'E') ───────────────────────────────────
@@ -1189,6 +1190,12 @@ function updateErrReg(m) {
   statErrors.style.color = severe ? 'var(--red)' : '#e8a000';
   statErrors.title = 'Adapter errors since logging started:\n'
     + active.map(a => '• ' + a.label).join('\n');
+}
+
+function clearMsgLog() {
+  msgTable.innerHTML = '';
+  rows = [];
+  statMsgs.textContent = '0';
 }
 
 function clearAnalysisPanes() {
@@ -1284,10 +1291,10 @@ document.getElementById('btn-kill').addEventListener('click', async () => {
 });
 
 btnClear.addEventListener('click', () => {
-  msgTable.innerHTML = '';
-  rows = [];
   errorCount = 0;
-  statErrors.textContent = '0';
+  clearMsgLog();
+  clearAnalysisPanes();
+  resetErrReg();
 });
 
 togPause.addEventListener('change', () => {
