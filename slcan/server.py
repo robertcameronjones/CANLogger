@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-CAN Logger — Web UI backend (GridConnect / SLCAN edition).
+CAN Logger — Web UI backend (SLCAN / serial-CAN edition).
 
-Standalone copy that talks to a GridConnect CANUSB COM FD (or any LAWICEL/
-SLCAN serial adapter) instead of a PEAK PCAN-USB. Classic CAN only — no CAN FD.
+Standalone copy for LAWICEL/SLCAN serial adapters (CANable, Joinrich RH-02
+with slcan firmware, etc.) instead of a PEAK PCAN-USB. Classic CAN only — no CAN FD.
 The original PEAK version is unchanged in the parent folder.
 
 Serves index.html and streams CAN frames, CAN ID stats, and decoded signals
@@ -22,7 +22,7 @@ ISO-TP (ISO 15765-2) reassembly is handled inline before decoding:
 
 Usage:
     ./start.sh        ← recommended
-    open http://localhost:8002
+    open http://localhost:8003
 """
 
 import sys
@@ -48,7 +48,7 @@ from datetime import datetime
 from pathlib import Path
 
 import can
-from can import Bus, Logger, Notifier
+from can import Logger, Notifier
 from can.interfaces.slcan import slcanBus
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -236,6 +236,14 @@ def _bytes_to_int(data: list[int], nbytes: int) -> int | None:
     return val
 
 
+def _decode_j1979_pid01(data: list[int]) -> tuple[bool, int] | None:
+    """Mode 01 PID 01 — MIL (bit 7) and DTC count (bits 0–6) from byte A."""
+    if len(data) < 3 or data[0] != 0x41 or data[1] != 0x01:
+        return None
+    status = data[2]
+    return bool(status & 0x80), status & 0x7F
+
+
 def _decode_string(data: list[int]) -> str | None:
     try:
         chars = [chr(b) for b in data if 0x20 <= b <= 0x7E and chr(b).isalnum()]
@@ -259,14 +267,19 @@ _state = {
     "bus":        None,
     "notifier":   None,
     "log_path":   None,
+    "can_logger": None,
     "msg_count":  0,
     "start_time": None,
+    "t0_hw":      None,
+    "first_msg_wall": None,
     "channel":    None,
     "bitrate":    None,
     "passive":    True,
     "fd":         False,
     "fmt":        ".trc",
+    "errreg":     None,
 }
+_state_lock = threading.Lock()
 
 # CAN ID tracker  {id_str: {count, last_ms, payload, last_ts}}
 _can_ids: dict[str, dict] = {}
@@ -278,27 +291,56 @@ _signals_lock = threading.Lock()
 
 _ws_clients: set[WebSocket] = set()
 _loop: asyncio.AbstractEventLoop | None = None
+_bc_queue: asyncio.Queue | None = None
+
+# Scanner TX recently sent — used to drop slcan echo of our own transmits.
+_recent_tx_lock = threading.Lock()
+_recent_tx: list[tuple[str, str, float]] = []  # (id_str, data_hex, monotonic_ts)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FastAPI app
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _note_scanner_tx(id_str: str, data_hex: str) -> None:
+    now = time.monotonic()
+    with _recent_tx_lock:
+        _recent_tx.append((id_str, data_hex, now))
+        if len(_recent_tx) > 64:
+            del _recent_tx[:-64]
+
+
+def _is_scanner_tx_echo(id_str: str, data_hex: str) -> bool:
+    now = time.monotonic()
+    with _recent_tx_lock:
+        for tid, td, ts in _recent_tx:
+            if now - ts > 0.25:
+                continue
+            if tid == id_str and td == data_hex:
+                return True
+    return False
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _loop
+    global _loop, _bc_queue
     _loop = asyncio.get_event_loop()
+    _bc_queue = asyncio.Queue(maxsize=400)
+    worker = asyncio.create_task(_broadcast_worker())
     load_signal_library()
     scanner.init(
         _state, _signals, _signals_lock,
         _can_ids, _can_ids_lock,
-        _lib_by_canid, _broadcast,
+        _lib_by_canid, _broadcast, _note_scanner_tx,
     )
     yield
-    # ── Ordered shutdown — release USB cleanly ────────────────────────────────
+    worker.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker
+    # ── Ordered shutdown — release USB cleanly (off the event loop) ───────────
     scanner.stop()
-    await asyncio.sleep(0.2)          # let scanner task cancel
+    await asyncio.sleep(0.2)
     if _state["running"]:
-        _teardown_bus()
+        await _async_teardown()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -306,12 +348,34 @@ app = FastAPI(lifespan=lifespan)
 # Device scan
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Serial ports that are never CAN adapters — hide them from the picker.
-_SERIAL_SKIP = ("bluetooth", "debug-console")
+# Obvious non-CAN serial devices — hide from picker and block on start.
+_SERIAL_SKIP = (
+    "bluetooth", "debug-console",
+    "bose", "jbl", "lego", "hc-06", "headphone", "beats", "airpods",
+    "keyboard", "mouse",
+)
+_CANABLE_VIDS = {0xAD50, 44368}
+
+
+def _should_hide_port(p) -> bool:
+    """Hide ports that are clearly not CAN adapters (Bluetooth audio, etc.)."""
+    dev = (p.device or "").lower()
+    desc = (p.description or "").lower()
+    return any(s in dev for s in _SERIAL_SKIP) or any(s in desc for s in _SERIAL_SKIP)
+
+
+def _port_label(p) -> str:
+    """Human-readable label for the device picker."""
+    desc = (p.description or "").strip()
+    if desc and "canable" in desc.lower():
+        # "CANable 9fddea4 github.com/..." → "CANable 9fddea4"
+        short = desc.split("github.com")[0].strip()
+        return short or desc
+    return desc or p.device
 
 
 def scan_devices() -> list[dict]:
-    """List serial ports for the GridConnect / LAWICEL (slcan) adapter."""
+    """List USB/serial ports (junk like Bluetooth headphones filtered out)."""
     try:
         from serial.tools import list_ports
         ports = list_ports.comports()
@@ -320,16 +384,59 @@ def scan_devices() -> list[dict]:
 
     active_ch = _state.get("channel")
     results = []
-    for p in sorted(ports, key=lambda x: x.device):
-        dev = p.device
-        if any(s in dev.lower() for s in _SERIAL_SKIP):
+    for p in ports:
+        if _should_hide_port(p):
             continue
+        label = _port_label(p)
+        desc = (p.description or "").lower()
         results.append({
-            "channel":   dev,
-            "condition": "active" if dev == active_ch else "available",
-            "label":     (p.description or "").strip() or dev,
+            "channel":     p.device,
+            "condition":   "active" if p.device == active_ch else "available",
+            "label":       label,
+            "recommended": ("canable" in desc or "slcan" in desc
+                            or p.vid in _CANABLE_VIDS),
         })
+    results.sort(key=lambda r: (0 if r.get("recommended") else 1, r["label"].lower()))
     return results
+
+
+def _validate_can_channel(channel: str) -> str | None:
+    """Return an error string if channel is an obvious non-CAN port."""
+    cl = channel.lower()
+    if any(s in cl for s in _SERIAL_SKIP):
+        return f"{channel} doesn't look like a CAN adapter"
+    try:
+        from serial.tools import list_ports
+        for p in list_ports.comports():
+            if p.device == channel and _should_hide_port(p):
+                return f"{(p.description or channel).strip()} is not a CAN adapter port"
+    except Exception:
+        pass
+    return None
+
+
+def _serial_port_busy(channel: str) -> str | None:
+    """Return an error if another process already holds the serial port."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["lsof", channel], capture_output=True, text=True, timeout=2,
+        )
+        if r.returncode != 0:
+            return None
+        my_pid = str(_os.getpid())
+        others = []
+        for line in r.stdout.strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] != my_pid:
+                others.append(parts[1])
+        if others:
+            pids = ", ".join(sorted(set(others)))
+            return (f"CANable port is held by another process (PID {pids}) — "
+                    "hit Kill in the sidebar, then try again")
+    except Exception:
+        pass
+    return None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # WebSocket broadcast
@@ -342,7 +449,23 @@ def _broadcast(data: dict):
     _loop.call_soon_threadsafe(_enqueue_broadcast, payload)
 
 def _enqueue_broadcast(payload: str):
-    asyncio.ensure_future(_send_all(payload))
+    q = _bc_queue
+    if q is None:
+        return
+    try:
+        q.put_nowait(payload)
+    except asyncio.QueueFull:
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        with contextlib.suppress(asyncio.QueueFull):
+            q.put_nowait(payload)
+
+async def _broadcast_worker():
+    while True:
+        payload = await _bc_queue.get()
+        await _send_all(payload)
 
 async def _send_all(payload: str):
     dead = set()
@@ -352,163 +475,6 @@ async def _send_all(payload: str):
         except Exception:
             dead.add(ws)
     _ws_clients.difference_update(dead)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# slcan bus with adapter error-register polling
-# ──────────────────────────────────────────────────────────────────────────────
-#
-# The CANable 1.0 "canable-fw" firmware does NOT implement the standard LAWICEL
-# 'F' status-flags command, and it does not emit CAN error frames. It exposes a
-# single nonstandard 'E' command that returns its internal *sticky* error
-# register as the (unterminated) string:  "CANable Error Register: <hex>"
-#
-# Register bits (canable-fw error.h — sticky since power-on, no clear command):
-#     bit0 ERR_PERIPHINIT          peripheral init failure
-#     bit1 ERR_USBTX_BUSY          USB TX busy (host not draining fast enough)
-#     bit2 ERR_CAN_TXFAIL          a CAN transmit failed (no ACK / bus fault)
-#     bit3 ERR_CANRXFIFO_OVERFLOW  RX FIFO overflow — frames were dropped
-#     bit4 ERR_FULLBUF_CANTX       internal CAN TX ring full
-#     bit5 ERR_FULLBUF_USBRX       internal USB RX ring full
-#
-# The 'E' reply carries no terminator, so to avoid corrupting the frame stream
-# we only issue 'E' when the read buffer is empty, and only treat a line that
-# *starts* with the marker as a reply. Classic-CAN frames begin with t/T/r/R
-# (non-hex), so any frame glued after the reply splits off cleanly.
-
-_ERRREG_RE = re.compile(r"CANable Error Register:\s*([0-9A-Fa-f]{1,2})")
-
-# (bit mask, key, human label, severe?)
-_ERRREG_BITS = [
-    (0x01, "periph_init",  "Peripheral init failure", False),
-    (0x02, "usbtx_busy",   "USB TX busy",             False),
-    (0x04, "can_tx_fail",  "CAN TX failed",           True),
-    (0x08, "rx_overflow",  "RX FIFO overflow",        True),
-    (0x10, "cantx_buffull","CAN TX buffer full",      False),
-    (0x20, "usbrx_buffull","USB RX buffer full",      False),
-]
-
-
-class StatusSlcanBus(slcanBus):
-    """slcanBus that also polls the canable-fw 'E' error register."""
-
-    _POLL_INTERVAL = 2.0  # seconds between 'E' polls
-
-    def __init__(self, *args, status_callback=None, **kwargs):
-        # These must exist before super().__init__ (it calls self._write).
-        self._write_lock  = threading.Lock()
-        self._status_lock = threading.Lock()
-        self._status_cb   = status_callback
-        self._err_reg     = 0
-        self._err_seen    = 0       # cumulative OR of everything read this session
-        self._err_time    = 0.0
-        self._supported   = None    # None=unknown, True/False once determined
-        self._last_poll   = 0.0
-        self._first_poll  = 0.0
-        super().__init__(*args, **kwargs)
-
-    # Serialize writes so an 'E' poll never interleaves bytes with a send().
-    def _write(self, string: str) -> None:
-        with self._write_lock:
-            super()._write(string)
-
-    def _maybe_poll(self) -> None:
-        now = time.monotonic()
-        if now - self._last_poll < self._POLL_INTERVAL:
-            return
-        # Only poll when no partial frame is buffered — keeps the reply clean.
-        if self._buffer:
-            return
-        self._last_poll = now
-        if not self._first_poll:
-            self._first_poll = now
-        try:
-            self._write("E")
-        except Exception:
-            return
-        # The 'E' reply ("CANable Error Register: <hex>") has NO terminator, so
-        # the line-based reader would never return it on an idle bus. Read it
-        # directly here. We're in the (single) recv thread, so this can't race.
-        self._read_err_reply()
-
-    def _read_err_reply(self) -> None:
-        deadline = time.monotonic() + 0.12
-        chunk = bytearray()
-        ser = self.serialPortOrig
-        while time.monotonic() < deadline:
-            n = ser.in_waiting
-            if n:
-                chunk.extend(ser.read(n))
-                m = _ERRREG_RE.search(chunk.decode(errors="ignore"))
-                if m:
-                    self._record(int(m.group(1), 16))
-                    # Bytes after the marker may be real frame data — hand them
-                    # back to the normal line reader.
-                    tail = chunk.decode(errors="ignore")[m.end():]
-                    if tail:
-                        self._buffer.extend(tail.encode())
-                    return
-            else:
-                time.sleep(0.004)
-        # No parseable reply this round — preserve whatever we read for _read().
-        if chunk:
-            self._buffer.extend(chunk)
-
-    def _recv_internal(self, timeout):
-        self._maybe_poll()
-
-        # If we've polled for a while with no parseable reply, mark unsupported.
-        if (self._supported is None and self._first_poll
-                and time.monotonic() - self._first_poll > 8.0):
-            with self._status_lock:
-                self._supported = False
-            self._emit()
-
-        if self._queue.qsize():
-            string = self._queue.get_nowait()
-        else:
-            string = self._read(timeout)
-
-        if string and string.startswith("CANable Error Register"):
-            m = _ERRREG_RE.match(string)
-            if m:
-                self._record(int(m.group(1), 16))
-                remainder = string[m.end():]
-                if remainder:
-                    self._queue.put_nowait(remainder)
-                    return super()._recv_internal(timeout)
-            return None, False
-
-        if string is not None:
-            self._queue.put_nowait(string)
-        return super()._recv_internal(timeout)
-
-    def _record(self, reg: int) -> None:
-        with self._status_lock:
-            self._supported = True
-            self._err_reg   = reg
-            self._err_seen |= reg
-            self._err_time  = time.time()
-        self._emit()
-
-    def _emit(self) -> None:
-        if self._status_cb:
-            try:
-                self._status_cb(self.error_snapshot())
-            except Exception:
-                pass
-
-    def error_snapshot(self) -> dict:
-        with self._status_lock:
-            reg, seen, supported, ts = (self._err_reg, self._err_seen,
-                                        self._supported, self._err_time)
-        active = [{"key": k, "label": lbl, "severe": sev}
-                  for bit, k, lbl, sev in _ERRREG_BITS if seen & bit]
-        return {"supported": supported, "reg": reg, "seen": seen,
-                "active": active, "ts": ts}
-
-
-def _on_bus_status(snap: dict) -> None:
-    _broadcast({"type": "errreg", **snap})
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CAN listener
@@ -631,15 +597,20 @@ _isotp = _ISOTPReassembler()
 class _CANListener(can.Listener):
     _canid_throttle: dict[str, float] = {}
     _CANID_MIN_INTERVAL = 0.25   # max 4 CAN-ID table updates/s per ID
+    _last_frame_bc = 0.0
+    _FRAME_BC_MIN_INTERVAL = 1.0 / 30.0  # cap UI frame stream at ~30/s
 
     def on_message_received(self, msg: can.Message):
-        _state["msg_count"] += 1
-        now_ts = time.time()
-
         id_str = (f"{msg.arbitration_id:08X}" if msg.is_extended_id
                   else f"{msg.arbitration_id:04X}")
         data_bytes = list(msg.data) if msg.data else []
         data_hex   = " ".join(f"{b:02X}" for b in data_bytes)
+
+        if _is_scanner_tx_echo(id_str, data_hex):
+            return
+
+        _state["msg_count"] += 1
+        now_ts = time.time()
 
         flags = []
         if msg.is_extended_id:  flags.append("XTD")
@@ -652,20 +623,22 @@ class _CANListener(can.Listener):
             _state["first_msg_wall"] = datetime.now()
         elapsed = msg.timestamp - _state["t0_hw"]
 
-        # ── raw frame broadcast ──────────────────────────────────────────────
-        _broadcast({
-            "type":  "frame",
-            "n":     _state["msg_count"],
-            "t":     round(elapsed, 4),
-            "id":    id_str,
-            "xtd":   msg.is_extended_id,
-            "rtr":   msg.is_remote_frame,
-            "fd":    msg.is_fd,
-            "err":   msg.is_error_frame,
-            "dl":    msg.dlc,
-            "data":  data_hex,
-            "flags": " ".join(flags),
-        })
+        # ── raw frame broadcast (throttled — full rate still goes to the log) ─
+        if now_ts - self._last_frame_bc >= self._FRAME_BC_MIN_INTERVAL:
+            self._last_frame_bc = now_ts
+            _broadcast({
+                "type":  "frame",
+                "n":     _state["msg_count"],
+                "t":     round(elapsed, 4),
+                "id":    id_str,
+                "xtd":   msg.is_extended_id,
+                "rtr":   msg.is_remote_frame,
+                "fd":    msg.is_fd,
+                "err":   msg.is_error_frame,
+                "dl":    msg.dlc,
+                "data":  data_hex,
+                "flags": " ".join(flags),
+            })
 
         # ── CAN ID table update ──────────────────────────────────────────────
         with _can_ids_lock:
@@ -726,14 +699,25 @@ class _CANListener(can.Listener):
         # Layer 1 — J1979 standard PIDs (Mode 01 / 0x41) ---------------------
         if mode_byte == 0x41 and len(data) >= 2:
             pid_str = f"{data[1]:02X}"
-            sig1 = J1979_PIDS.get(pid_str)
-            if sig1:
-                raw = _bytes_to_int(data[2:], sig1["nbytes"])
-                if raw is not None:
-                    decoded_key = f"j1979_{pid_str}"
-                    val = raw * sig1["mul"] + sig1["off"]
-                    self._update_and_emit(decoded_key, sig1["name"],
-                                         sig1["unit"], val, id_str)
+            if pid_str == "01":
+                pid01 = _decode_j1979_pid01(data)
+                if pid01 is not None:
+                    mil_on, dtc_count = pid01
+                    self._emit_signal("j1979_01_mil", "MIL", "",
+                                      "ON" if mil_on else "OFF",
+                                      None, None, id_str)
+                    self._update_and_emit("j1979_01_dtc", "DTC Count", "",
+                                          dtc_count, id_str)
+                    decoded_key = "j1979_01_mil"
+            else:
+                sig1 = J1979_PIDS.get(pid_str)
+                if sig1:
+                    raw = _bytes_to_int(data[2:], sig1["nbytes"])
+                    if raw is not None:
+                        decoded_key = f"j1979_{pid_str}"
+                        val = raw * sig1["mul"] + sig1["off"]
+                        self._update_and_emit(decoded_key, sig1["name"],
+                                             sig1["unit"], val, id_str)
 
         # Layer 2 — J1979-2 standard DIDs (Mode 22 / 0x62, F4xx range) -------
         elif mode_byte == 0x62 and len(data) >= 3:
@@ -861,25 +845,36 @@ async def scan():
 
 @app.post("/start")
 async def start(config: dict):
-    if _state["running"]:
-        return JSONResponse({"ok": False, "error": "Already running"})
+    with _state_lock:
+        if _state["running"]:
+            return JSONResponse({"ok": False, "error": "Already running"})
 
     channel = config.get("channel", "")
     bitrate = int(config.get("bitrate", 500_000))
     passive = bool(config.get("passive", False))
-    fd      = False   # GridConnect/slcan path: classic CAN only
+    fd      = False   # slcan path: classic CAN only
     fmt     = config.get("fmt", ".trc")
 
     if not channel:
         return JSONResponse({"ok": False, "error": "No serial port selected"})
+    ch_err = _validate_can_channel(channel)
+    if ch_err:
+        return JSONResponse({"ok": False, "error": ch_err})
+    busy = _serial_port_busy(channel)
+    if busy:
+        return JSONResponse({"ok": False, "error": busy})
+
+    def _open_bus():
+        return slcanBus(channel=channel, bitrate=bitrate,
+                        listen_only=passive, timeout=0.05)
 
     try:
-        # GridConnect CANUSB COM FD speaks the LAWICEL/SLCAN protocol.
-        # listen_only mirrors the PEAK PASSIVE state: silent monitor, no TX.
-        # StatusSlcanBus additionally polls the canable-fw 'E' error register.
-        bus = StatusSlcanBus(channel=channel, bitrate=bitrate,
-                             listen_only=passive,
-                             status_callback=_on_bus_status)
+        loop = asyncio.get_running_loop()
+        bus = await asyncio.wait_for(loop.run_in_executor(None, _open_bus), 8.0)
+    except asyncio.TimeoutError:
+        return JSONResponse({"ok": False,
+                             "error": "Timed out opening serial port — "
+                                      "try Kill, then replug the CANable"})
     except Exception as exc:
         return JSONResponse({"ok": False, "error": str(exc)})
 
@@ -908,7 +903,8 @@ async def start(config: dict):
     _state.update(running=True, bus=bus, notifier=notifier, log_path=log_path,
                   can_logger=can_logger,
                   msg_count=0, start_time=time.time(), t0_hw=None, first_msg_wall=None,
-                  channel=channel, bitrate=bitrate, passive=passive, fd=fd, fmt=fmt)
+                  channel=channel, bitrate=bitrate, passive=passive, fd=fd, fmt=fmt,
+                  errreg=None)
 
     _broadcast({"type": "started", "log": log_path.name,
                 "channel": channel, "bitrate": bitrate,
@@ -916,23 +912,43 @@ async def start(config: dict):
     return JSONResponse({"ok": True, "log": str(log_path)})
 
 def _teardown_bus():
-    """Stop notifier, reset CAN error state, shut down bus, clear state."""
+    """Stop notifier, shut down bus, clear state. Clears running first."""
+    with _state_lock:
+        notifier       = _state.pop("notifier", None)
+        bus            = _state.pop("bus", None)
+        log_path       = _state.pop("log_path", None)
+        msg_count      = _state.pop("msg_count", 0)
+        start_wall     = _state.pop("start_time", None)
+        first_msg_wall = _state.pop("first_msg_wall", None)
+        _state.update(running=False, bus=None, notifier=None, log_path=None,
+                      can_logger=None, msg_count=0, start_time=None, t0_hw=None,
+                      first_msg_wall=None, channel=None, bitrate=None,
+                      errreg=None)
+
+    with _can_ids_lock:
+        _can_ids.clear()
+    with _signals_lock:
+        _signals.clear()
+    _isotp.clear()
+    with _recent_tx_lock:
+        _recent_tx.clear()
+
     try:
-        if _state.get("notifier"):
-            _state["notifier"].stop()
-        if _state.get("bus"):
-            try: _state["bus"].reset()   # clear error-warning before USB release
-            except Exception: pass
-            _state["bus"].shutdown()
+        if notifier:
+            notifier.stop()
+        if bus:
+            try:
+                if getattr(bus, "serialPortOrig", None) and bus.serialPortOrig.is_open:
+                    bus.serialPortOrig.timeout = 0.05
+            except Exception:
+                pass
+            try:
+                bus.reset()
+            except Exception:
+                pass
+            bus.shutdown()
     except Exception:
         pass
-    log_path       = _state.get("log_path")
-    msg_count      = _state.get("msg_count", 0)
-    start_wall     = _state.get("start_time")
-    first_msg_wall = _state.get("first_msg_wall")
-    _state.update(running=False, bus=None, notifier=None, log_path=None,
-                  can_logger=None, msg_count=0, start_time=None, t0_hw=None,
-                  first_msg_wall=None)
 
     # Prepend wall-clock timing comments at the top of the log file
     if log_path and log_path.exists():
@@ -954,25 +970,35 @@ def _teardown_bus():
     return log_path, msg_count
 
 
+async def _async_teardown():
+    """Run bus teardown off the event loop so /stop and /kill stay responsive."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(loop.run_in_executor(None, _teardown_bus), 4.0)
+    except asyncio.TimeoutError:
+        return None, _state.get("msg_count", 0)
+
+
 @app.post("/stop")
 async def stop():
-    if not _state["running"]:
-        return JSONResponse({"ok": False, "error": "Not running"})
+    with _state_lock:
+        if not _state["running"]:
+            return JSONResponse({"ok": False, "error": "Not running"})
     scanner.stop()
-    await asyncio.sleep(0.2)
-    log_path, msg_count = _teardown_bus()
+    await asyncio.sleep(0.1)
+    log_path, msg_count = await _async_teardown()
     size_kb = log_path.stat().st_size / 1024 if log_path and log_path.exists() else 0
     _broadcast({"type": "stopped", "log": log_path.name if log_path else "—",
                 "msgs": msg_count, "size_kb": round(size_kb, 1)})
-    return JSONResponse({"ok": True, "log": str(log_path),
+    return JSONResponse({"ok": True, "log": str(log_path) if log_path else None,
                          "msgs": msg_count, "size_kb": round(size_kb, 1)})
 
 
 @app.post("/kill")
 async def kill():
     scanner.stop()
-    await asyncio.sleep(0.1)
-    _teardown_bus()
+    await asyncio.sleep(0.05)
+    await _async_teardown()
     _broadcast({"type": "killed"})
     return JSONResponse({"ok": True})
 
@@ -980,15 +1006,16 @@ async def kill():
 async def status():
     with _can_ids_lock:
         id_count = len(_can_ids)
-    bus = _state.get("bus")
-    errreg = bus.error_snapshot() if hasattr(bus, "error_snapshot") else None
-    return JSONResponse({
-        "running": _state["running"], "channel": _state["channel"],
-        "bitrate": _state["bitrate"], "passive": _state["passive"],
-        "msgs": _state["msg_count"], "log": _state["log_path"].name if _state["log_path"] else None,
-        "unique_ids": id_count,
-        "errreg": errreg,
-    })
+    with _state_lock:
+        errreg = _state.get("errreg")
+        return JSONResponse({
+            "running": _state["running"], "channel": _state["channel"],
+            "bitrate": _state["bitrate"], "passive": _state["passive"],
+            "msgs": _state["msg_count"],
+            "log": _state["log_path"].name if _state["log_path"] else None,
+            "unique_ids": id_count,
+            "errreg": errreg,
+        })
 
 @app.get("/library")
 async def library():
@@ -1041,26 +1068,26 @@ async def scan_status():
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     _ws_clients.add(ws)
-    # Send current state on connect
-    with _can_ids_lock:
-        ids_snapshot = dict(_can_ids)
-    with _signals_lock:
-        sig_snapshot = dict(_signals)
-    for id_str, e in ids_snapshot.items():
-        await ws.send_text(json.dumps({
-            "type": "canid", "id": id_str,
-            "count": e["count"], "payload": e["payload"], "last_ms": e["last_ms"],
-        }))
-    for pid, e in sig_snapshot.items():
-        await ws.send_text(json.dumps({
-            "type": "signal", "pid": pid,
-            "name": e["name"], "unit": e["unit"],
-            "value": e["value"], "min": e["min"], "max": e["max"],
-            "can_id": e["can_id"],
-        }))
-    bus = _state.get("bus")
-    if bus is not None and hasattr(bus, "error_snapshot"):
-        await ws.send_text(json.dumps({"type": "errreg", **bus.error_snapshot()}))
+    running = _state.get("running")
+    if running:
+        with _can_ids_lock:
+            ids_snapshot = dict(_can_ids)
+        with _signals_lock:
+            sig_snapshot = dict(_signals)
+        for id_str, e in ids_snapshot.items():
+            await ws.send_text(json.dumps({
+                "type": "canid", "id": id_str,
+                "count": e["count"], "payload": e["payload"], "last_ms": e["last_ms"],
+            }))
+        for pid, e in sig_snapshot.items():
+            await ws.send_text(json.dumps({
+                "type": "signal", "pid": pid,
+                "name": e["name"], "unit": e["unit"],
+                "value": e["value"], "min": e["min"], "max": e["max"],
+                "can_id": e["can_id"],
+            }))
+    else:
+        await ws.send_text(json.dumps({"type": "idle"}))
     try:
         while True:
             await ws.receive_text()
@@ -1071,7 +1098,9 @@ async def websocket_endpoint(ws: WebSocket):
 
 if __name__ == "__main__":
     import webbrowser
-    print("\n  CAN Logger Web UI — GridConnect / SLCAN edition")
-    print("  Open: http://localhost:8002\n")
-    threading.Timer(1.2, lambda: webbrowser.open("http://localhost:8002")).start()
-    uvicorn.run("server:app", host="0.0.0.0", port=8002, reload=False)
+    port = int(_os.environ.get("CAN_LOGGER_PORT", "8003"))
+    url = f"http://localhost:{port}"
+    print(f"\n  CAN Logger Web UI — SLCAN edition (bench)")
+    print(f"  Open: {url}\n")
+    threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)

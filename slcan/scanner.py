@@ -54,11 +54,13 @@ _can_ids   = None   # server _can_ids dict
 _cid_lock  = None   # server _can_ids_lock (threading.Lock)
 _lib       = None   # server _lib_by_canid dict (modified in-place)
 _broadcast = None   # server _broadcast(data: dict) function
+_note_tx   = None   # server _note_scanner_tx(id_str, data_hex)
 
 
 def init(state, signals, sig_lock, can_ids, cid_lock,
-         lib_by_canid, broadcast_fn):
+         lib_by_canid, broadcast_fn, note_tx=None):
     global _state, _signals, _sig_lock, _can_ids, _cid_lock, _lib, _broadcast
+    global _note_tx
     _state     = state
     _signals   = signals
     _sig_lock  = sig_lock
@@ -66,6 +68,7 @@ def init(state, signals, sig_lock, can_ids, cid_lock,
     _cid_lock  = cid_lock
     _lib       = lib_by_canid
     _broadcast = broadcast_fn
+    _note_tx   = note_tx
 
 
 # ── Scanner state ─────────────────────────────────────────────────────────────
@@ -246,6 +249,8 @@ def _send(bus, msg: can.Message, label: str = ""):
     is_ext   = msg.is_extended_id
     id_str   = f"{arb_id:08X}" if is_ext else f"{arb_id:04X}"
     data_hex = " ".join(f"{b:02X}" for b in msg.data) if msg.data else ""
+    if _note_tx:
+        _note_tx(id_str, data_hex)
     t0       = (_state or {}).get("start_time") or 0.0
     elapsed  = round(time.time() - t0, 4) if t0 else 0.0
 

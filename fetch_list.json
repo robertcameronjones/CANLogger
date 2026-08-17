@@ -37,6 +37,21 @@
   },
 
   {
+    "name": "MIL / DTCs",
+    "key": "mil_dtc",
+    "enabled": true,
+    "one_shot": false,
+    "layers": [
+      {
+        "protocol": "J1979",
+        "name": "MIL Status PID 01",
+        "pid": "01",
+        "signal_key": "j1979_01_mil"
+      }
+    ]
+  },
+
+  {
     "name": "Vehicle Ready",
     "key": "veh_ready",
     "enabled": true,

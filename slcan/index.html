@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CAN Logger — GridConnect</title>
+<title>CAN Logger — Bench (CANable)</title>
 <style>
   :root {
     --bg:        #0d1117;
@@ -485,6 +485,7 @@
 <div id="topbar">
   <div id="status-dot"></div>
   <h1>CAN Logger</h1>
+  <p style="margin:-8px 0 12px;font-size:12px;color:var(--text-mute)">CANable / slcan · bench · :8003</p>
   <span class="badge" id="badge-channel">—</span>
   <span class="badge" id="badge-bitrate">—</span>
   <span class="badge" id="badge-mode">—</span>
@@ -534,9 +535,9 @@
   <div id="sidebar">
 
     <div>
-      <div class="section-label">Device <span style="color:#8b949e;font-weight:400;">· GridConnect / SLCAN</span></div>
+      <div class="section-label">Device <span style="color:#8b949e;font-weight:400;">· SLCAN serial</span></div>
       <div class="field">
-        <label>Serial Port</label>
+        <label>CAN Adapter</label>
         <select id="sel-channel"><option value="">Scanning…</option></select>
       </div>
       <div style="margin-top:7px; display:flex; gap:6px;">
@@ -825,8 +826,6 @@ async function scan() {
 
     const active    = d.devices.filter(v => v.condition === 'active');
     const available = d.devices.filter(v => v.condition === 'available');
-    const occupied  = d.devices.filter(v => v.condition === 'occupied');
-    const rest      = d.devices.filter(v => v.condition === 'unavailable');
 
     const addGroup = (label, devs, suffix) => {
       if (!devs.length) return;
@@ -836,23 +835,33 @@ async function scan() {
       devs.forEach(dev => {
         const opt = document.createElement('option');
         opt.value = dev.channel;
-        const name = dev.label && dev.label !== dev.channel
-          ? `${dev.label} — ${dev.channel}` : dev.channel;
-        opt.textContent = name + (suffix ? ' ' + suffix : '');
+        const friendly = dev.label || dev.channel;
+        opt.textContent = friendly + (suffix ? ' ' + suffix : '')
+          + (dev.recommended ? '' : '');
         grp.appendChild(opt);
       });
     };
 
     addGroup('● Active (this app)', active,    '');
     addGroup('✓ Serial ports',       available, '');
-    addGroup('⚠ In use (other)',     occupied,  '(in use)');
-    addGroup('— Manual override',    rest,      '(not detected)');
 
-    if (active.length) selChannel.value = active[0].channel;
+    const all = [...active, ...available];
+    const preferred = all.find(d => d.recommended);
+    if (preferred) {
+      selChannel.value = preferred.channel;
+    } else if (all.length === 1) {
+      selChannel.value = all[0].channel;
+    } else {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = all.length ? '— select port —' : 'No ports found — Rescan';
+      selChannel.insertBefore(opt, selChannel.firstChild);
+      selChannel.value = '';
+    }
 
-    const detected = active.length + available.length + occupied.length;
-    if (detected > 0) toast(`Found ${detected} serial port(s)`, 'green');
-    else toast('No serial ports detected', 'red');
+    if (preferred) toast(`Default: ${preferred.label}`, 'green');
+    else if (all.length) toast(`${all.length} port(s) — select your adapter`, 'green');
+    else toast('No serial ports found', 'red');
   } catch (e) {
     selChannel.innerHTML = '<option value="">Server unreachable</option>';
     toast('Could not reach server', 'red');
@@ -879,6 +888,8 @@ function handleServerMsg(msg) {
     case 'killed':
       onStopped({ log: '—', msgs: 0, size_kb: 0 });
       dot.className = '';
+      break;
+    case 'idle':
       break;
   }
 }
@@ -981,24 +992,47 @@ btnStart.addEventListener('click', async () => {
   const channel = selChannel.value;
   if (!channel) { toast('Select a serial port first', 'red'); return; }
 
-  const r = await fetch('/start', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      channel,
-      bitrate: parseInt(selBitrate.value),
-      passive: togPassive.checked,
-      fd:      false,
-      fmt:     selFmt.value,
-      note:    document.getElementById('inp-note').value.trim(),
-    }),
-  });
-  const d = await r.json();
-  if (!d.ok) toast('Error: ' + d.error, 'red');
+  btnStart.disabled = true;
+  btnStart.textContent = 'Connecting…';
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 12000);
+  try {
+    const r = await fetch('/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ac.signal,
+      body: JSON.stringify({
+        channel,
+        bitrate: parseInt(selBitrate.value),
+        passive: togPassive.checked,
+        fd:      false,
+        fmt:     selFmt.value,
+        note:    document.getElementById('inp-note').value.trim(),
+      }),
+    });
+    const d = await r.json();
+    if (!d.ok) toast('Error: ' + d.error, 'red');
+  } catch (e) {
+    toast('Connect timed out — hit Kill, wait 2s, try again', 'red');
+  } finally {
+    clearTimeout(timer);
+    if (!running) {
+      btnStart.disabled = false;
+      btnStart.textContent = '▶ Start Logging';
+    }
+  }
 });
 
 btnStop.addEventListener('click', async () => {
-  await fetch('/stop', { method: 'POST' });
+  btnStop.disabled = true;
+  try {
+    const r = await fetch('/stop', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) toast('Stop: ' + (d.error || 'failed'), 'red');
+  } catch (e) {
+    toast('Stop failed — try Kill', 'red');
+  }
+  btnStop.disabled = false;
 });
 
 // ── Vehicle scan controls ─────────────────────────────────────────────────────
@@ -1126,6 +1160,7 @@ function onStarted(msg) {
   logFilename.textContent = msg.log;
 
   btnStart.disabled = true;
+  btnStart.textContent = '▶ Start Logging';
   btnStop.disabled  = false;
   setControlsEnabled(false);
   updateScanButtons();
@@ -1150,6 +1185,7 @@ function onStopped(msg) {
   badgeMode.className = 'badge';
 
   btnStart.disabled = false;
+  btnStart.textContent = '▶ Start Logging';
   btnStop.disabled  = true;
   setControlsEnabled(true);
   updateScanButtons();
@@ -1166,9 +1202,9 @@ function onStopped(msg) {
 // slcan does not deliver CAN error frames, so the "Errors" stat instead shows
 // the adapter's internal sticky error register (TX-fail, RX-overflow, etc).
 function resetErrReg() {
-  statErrors.textContent = '0';
+  statErrors.textContent = 'n/a';
   statErrors.style.color = '';
-  statErrors.title = '';
+  statErrors.title = 'Adapter error register not polled (plain slcan — avoids serial hangs).';
 }
 
 function updateErrReg(m) {
@@ -1327,9 +1363,30 @@ async function loadLibraryStatus() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
+async function syncStatsFromServer() {
+  try {
+    const r = await fetch('/status');
+    const d = await r.json();
+    if (!d.running) return;
+    running = true;
+    dot.className = 'online';
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    setControlsEnabled(false);
+    if (d.channel) { badgeCh.textContent = d.channel; badgeCh.className = 'badge cyan'; }
+    if (d.bitrate) { badgeBr.textContent = fmtBitrate(d.bitrate); badgeBr.className = 'badge green'; }
+    badgeMode.textContent = d.passive ? 'PASSIVE' : 'ACTIVE';
+    badgeMode.className = 'badge ' + (d.passive ? 'yellow' : 'green');
+    if (d.log) logFilename.textContent = d.log;
+    statMsgs.textContent = (d.msgs || 0).toLocaleString();
+    statIds.textContent = String(d.unique_ids || 0);
+  } catch (_) {}
+}
+
 connectWS();
 scan();
 loadLibraryStatus();
+syncStatsFromServer();
 </script>
 </body>
 </html>

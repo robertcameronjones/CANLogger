@@ -5,31 +5,49 @@ before starting servers or touching the CAN hardware.
 
 ## TL;DR — "start it up"
 
-When the user asks to **start the logger**, they almost always mean the
-**GridConnect / SLCAN edition** (used with the CANable / Joinrich RH-02 adapter):
+Two editions because the **hardware interfaces differ** — PEAK uses the `pcan`
+driver; the bench adapter uses **slcan over USB serial**. Same UI, different
+backends. You pick the device in the dropdown; nothing is locked to one adapter.
+
+| | **Vehicle** (PEAK PCAN) | **Bench** (slcan serial) |
+|---|---|---|
+| **Hardware** | PEAK PCAN-USB | CANable / Joinrich RH-02 (slcan firmware) |
+| **Start** | `./start.sh` (repo root) | `cd slcan && ./start.sh` |
+| **URL** | http://localhost:8001 | http://localhost:8003 |
+| **Interface** | `pcan` | `slcan` |
+
+Both can run at the same time (different ports, different USB devices). Root
+`start.sh` only frees port **8001**; it does not stop the bench logger on 8003.
+
+When the user asks to **start the logger** without specifying which edition,
+context matters:
+- **At the desk / bench** → `slcan/` edition (CANable)
+- **In the vehicle** → repo root (PEAK PCAN)
 
 ```bash
-cd "/Users/robertjones/Documents/CAN Logger/gridconnect" && ./start.sh
-# → http://localhost:8002
-```
-
-The original **PEAK PCAN-USB edition** lives at the repo root:
-
-```bash
+# Vehicle — PEAK PCAN-USB
 cd "/Users/robertjones/Documents/CAN Logger" && ./start.sh
 # → http://localhost:8001
+
+# Bench — CANable / Joinrich (slcan over USB serial)
+cd "/Users/robertjones/Documents/CAN Logger/slcan" && ./start.sh
+# → http://localhost:8003
 ```
 
 Both reuse the same virtualenv at `./venv` (repo root).
 
+**Naming note:** an old misnamed folder `gridconnect/` held the bench slcan copy.
+That name was wrong — the vehicle logger is PEAK PCAN at the repo root, not
+GridConnect. The bench edition is now in `slcan/`.
+
 ## ⚠️ CRITICAL: the agent usually cannot start the server itself
 
-The server must open a USB serial device (e.g. `/dev/cu.usbmodem1201`). Commands
-an agent runs normally go through Cursor's **sandbox**, which blocks USB access.
-A sandboxed server starts fine but every capture fails with:
+The slcan edition must open a USB serial device (e.g. `/dev/cu.usbmodem1301`).
+Commands an agent runs normally go through Cursor's **sandbox**, which blocks USB
+access. A sandboxed server starts fine but every capture fails with:
 
 ```
-could not open port /dev/cu.usbmodem1201: [Errno 1] Operation not permitted
+could not open port /dev/cu.usbmodem1301: [Errno 1] Operation not permitted
 ```
 
 Therefore, to start the server, do **one** of:
@@ -46,49 +64,52 @@ replace a working (unsandboxed) instance with a broken (sandboxed) one.
 
 ## Hardware / device facts
 
-- Active adapter: **CANable 1.0** running `normaldotcom/canable-fw` slcan
-  firmware (this is the Joinrich RH-02, reflashed from gs_usb to slcan).
-- Enumerates as a serial port, typically `/dev/cu.usbmodem1201`
-  (USB ID `0xAD50:0x60C4`, label `CANable 9fddea4 …`).
-- Classic CAN only (no CAN FD). Common bitrate: **500000**.
-- python-can interface: `slcan`. Passive = `listen_only` (silent monitor).
+### Vehicle (repo root)
+- PEAK PCAN-USB (or PCAN-USB FD) via mac-can **PCBUSB** driver.
+- python-can interface: `pcan`. Channels: `PCAN_USBBUS1` … `PCAN_USBBUS8`.
+- Supports CAN FD. Common bitrate: **500000**.
+
+### Bench (`slcan/`)
+- **CANable 1.0** running `normaldotcom/canable-fw` slcan firmware (Joinrich
+  RH-02 reflashed from gs_usb to slcan).
+- Enumerates as a serial port, typically `/dev/cu.usbmodem1301`
+  (USB ID `0xAD50:0x60C4`).
+- Classic CAN only (no CAN FD). python-can interface: `slcan`.
+- Passive = `listen_only` (silent monitor).
 - **One owner per port:** only a single process can hold the serial device at a
-  time. The logger and any transmitter (e.g. a drive-cycle player) cannot share
-  one adapter — the second to open it will fail/hang.
+  time.
 
 ## Check / stop the server (safe, read-only-ish)
 
 ```bash
-# Is it up + logging?
-curl -s http://localhost:8002/status
+# Vehicle
+curl -s http://localhost:8001/status
+lsof -nP -iTCP:8001 -sTCP:LISTEN
 
-# What's listening / holding things
-lsof -nP -iTCP:8002 -sTCP:LISTEN
-lsof /dev/cu.usbmodem1201        # who holds the adapter
-
-# Rescan from the UI is also exposed as:
-curl -s http://localhost:8002/scan
+# Bench
+curl -s http://localhost:8003/status
+lsof -nP -iTCP:8003 -sTCP:LISTEN
+lsof /dev/cu.usbmodem1301        # who holds the adapter
+curl -s http://localhost:8003/scan
 ```
 
 To stop: `Ctrl-C` in the terminal running it, or kill the PID listening on the
 port. Prefer letting the user do this.
 
-## GridConnect edition specifics (`gridconnect/`)
+## PEAK / vehicle edition (repo root)
 
-- Standalone copy of the app, slcan-only, served on **8002** (parent is 8001).
-- `server.py` opens the bus via `StatusSlcanBus` (a `slcanBus` subclass) which
-  also polls the firmware's nonstandard `E` command to read the adapter's
-  **error register**, surfaced in the UI's "Errors" stat.
-  - This firmware does **not** emit true CAN error frames and does not support
-    the standard LAWICEL `F` flags. The `E` register is sticky-since-power-on and
-    reports: CAN TX failed, RX FIFO overflow, and internal buffer-full / USB-busy
-    conditions — not bus-off / error-passive / arbitration-lost.
-- Logs: `gridconnect/logs/can_log_<timestamp>[_<note>].trc` (gitignored).
+- `server.py` — `interface="pcan"`, served on **8001**.
+- Logs: `logs/can_log_<timestamp>[_<note>].trc` (gitignored).
+- Requires PCBUSB driver (see `README.md`).
+
+## SLCAN / bench edition (`slcan/`)
+
+- `server.py` — plain `slcanBus`, CANable-focused device picker, served on **8003**.
+- Logs: `slcan/logs/can_log_<timestamp>[_<note>].trc` (gitignored).
 
 ## Repo / env notes
 
 - Git remote: `origin` → `github.com/robertcameronjones/CANLogger.git`, branch `main`.
 - `venv/`, `logs/`, `*.trc`, `__pycache__/`, `.DS_Store` are gitignored.
-- `PCBUSB/` is the third-party PEAK macOS driver (only needed for the PEAK
-  edition) and is not part of this project's source.
+- `PCBUSB/` is the third-party PEAK macOS driver (vehicle edition only).
 - Decoding signal library is optional; see `README.md`.

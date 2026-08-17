@@ -229,6 +229,14 @@ def _bytes_to_int(data: list[int], nbytes: int) -> int | None:
     return val
 
 
+def _decode_j1979_pid01(data: list[int]) -> tuple[bool, int] | None:
+    """Mode 01 PID 01 — MIL (bit 7) and DTC count (bits 0–6) from byte A."""
+    if len(data) < 3 or data[0] != 0x41 or data[1] != 0x01:
+        return None
+    status = data[2]
+    return bool(status & 0x80), status & 0x7F
+
+
 def _decode_string(data: list[int]) -> str | None:
     try:
         chars = [chr(b) for b in data if 0x20 <= b <= 0x7E and chr(b).isalnum()]
@@ -555,14 +563,25 @@ class _CANListener(can.Listener):
         # Layer 1 — J1979 standard PIDs (Mode 01 / 0x41) ---------------------
         if mode_byte == 0x41 and len(data) >= 2:
             pid_str = f"{data[1]:02X}"
-            sig1 = J1979_PIDS.get(pid_str)
-            if sig1:
-                raw = _bytes_to_int(data[2:], sig1["nbytes"])
-                if raw is not None:
-                    decoded_key = f"j1979_{pid_str}"
-                    val = raw * sig1["mul"] + sig1["off"]
-                    self._update_and_emit(decoded_key, sig1["name"],
-                                         sig1["unit"], val, id_str)
+            if pid_str == "01":
+                pid01 = _decode_j1979_pid01(data)
+                if pid01 is not None:
+                    mil_on, dtc_count = pid01
+                    self._emit_signal("j1979_01_mil", "MIL", "",
+                                      "ON" if mil_on else "OFF",
+                                      None, None, id_str)
+                    self._update_and_emit("j1979_01_dtc", "DTC Count", "",
+                                          dtc_count, id_str)
+                    decoded_key = "j1979_01_mil"
+            else:
+                sig1 = J1979_PIDS.get(pid_str)
+                if sig1:
+                    raw = _bytes_to_int(data[2:], sig1["nbytes"])
+                    if raw is not None:
+                        decoded_key = f"j1979_{pid_str}"
+                        val = raw * sig1["mul"] + sig1["off"]
+                        self._update_and_emit(decoded_key, sig1["name"],
+                                             sig1["unit"], val, id_str)
 
         # Layer 2 — J1979-2 standard DIDs (Mode 22 / 0x62, F4xx range) -------
         elif mode_byte == 0x62 and len(data) >= 3:

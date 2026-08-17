@@ -1,6 +1,8 @@
 #!/bin/zsh
 cd "$(dirname "$0")"
 
+# PEAK PCAN-USB edition (vehicle). Serves http://localhost:8001
+# Does NOT stop the bench CANable logger on 8003 — both can run together.
 PORT=8001
 
 # Free the port if a previous instance is still bound to it
