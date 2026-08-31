@@ -6,6 +6,7 @@ __pycache__/
 .DS_Store
 logs/
 *.trc
+!samples/**/*.trc
 *.asc
 *.blf
 *.csv
